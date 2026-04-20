@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Field IoT Gateway Nano</title>
+    <link rel="stylesheet" href="/static/style.css" />
+    <script src="/static/i18n.js"></script>
+  </head>
+  <body>
+    <div class="bg-shape bg-1"></div>
+    <div class="bg-shape bg-2"></div>
+
+    <main class="container">
+      <header class="app-header">
+        <div class="header-copy">
+          <h1 data-i18n="app.name">Field IoT Gateway Nano</h1>
+          <p>
+            <span data-i18n="app.subtitle">Device Console</span>
+            |
+            <span data-i18n="app.local_time">Local Time</span>: <span id="local-time">-</span>
+          </p>
+        </div>
+        <div class="header-actions">
+          <button id="language-toggle-btn" type="button" class="action secondary">日本語</button>
+          <button id="logout-btn" type="button" class="action" data-i18n="actions.logout">Log Out</button>
+        </div>
+      </header>
+
+      <nav id="tab-list" class="tabs" role="tablist"></nav>
+
+      <section id="panel-basic" class="panel active" role="tabpanel">
+        <form id="basic-form">
+          <label data-i18n="basic.hostname">Hostname</label>
+          <input id="hostname" name="hostname" type="text" required />
+
+          <label data-i18n="basic.interface">Interface</label>
+          <input id="interface" name="interface" type="text" readonly />
+
+          <label data-i18n="basic.ip_assignment">IP Assignment</label>
+          <select id="mode" name="mode">
+            <option value="dhcp" data-i18n="basic.mode.dhcp">DHCP</option>
+            <option value="static" data-i18n="basic.mode.static">Manual</option>
+          </select>
+
+          <div id="static-fields" class="windows-ipv4">
+            <h2 class="section-title" data-i18n="basic.ipv4_settings">IPv4 Settings</h2>
+            <p class="section-sub" data-i18n="basic.use_ip">Use the following IP address</p>
+
+            <div class="win-row">
+              <label data-i18n="basic.ip_address">IP Address</label>
+              <div class="ipv4-segment" data-group="ipv4">
+                <input id="ipv4_1" type="number" min="0" max="255" inputmode="numeric" />
+                <span>.</span>
+                <input id="ipv4_2" type="number" min="0" max="255" inputmode="numeric" />
+                <span>.</span>
+                <input id="ipv4_3" type="number" min="0" max="255" inputmode="numeric" />
+                <span>.</span>
+                <input id="ipv4_4" type="number" min="0" max="255" inputmode="numeric" />
+              </div>
+            </div>
+
+            <div class="win-row">
+              <label data-i18n="basic.subnet_mask">Subnet Mask</label>
+              <div class="ipv4-segment" data-group="subnet_mask">
+                <input id="subnet_mask_1" type="number" min="0" max="255" inputmode="numeric" />
+                <span>.</span>
+                <input id="subnet_mask_2" type="number" min="0" max="255" inputmode="numeric" />
+                <span>.</span>
+                <input id="subnet_mask_3" type="number" min="0" max="255" inputmode="numeric" />
+                <span>.</span>
+                <input id="subnet_mask_4" type="number" min="0" max="255" inputmode="numeric" />
+              </div>
+            </div>
+
+            <div class="win-row">
+              <label data-i18n="basic.default_gateway">Default Gateway</label>
+              <div class="ipv4-segment" data-group="gateway4">
+                <input id="gateway4_1" type="number" min="0" max="255" inputmode="numeric" />
+                <span>.</span>
+                <input id="gateway4_2" type="number" min="0" max="255" inputmode="numeric" />
+                <span>.</span>
+                <input id="gateway4_3" type="number" min="0" max="255" inputmode="numeric" />
+                <span>.</span>
+                <input id="gateway4_4" type="number" min="0" max="255" inputmode="numeric" />
+              </div>
+            </div>
+
+            <p class="section-sub" data-i18n="basic.use_dns">Use the following DNS server addresses</p>
+
+            <div class="win-row">
+              <label data-i18n="basic.preferred_dns">Preferred DNS</label>
+              <div class="ipv4-segment" data-group="dns1">
+                <input id="dns1_1" type="number" min="0" max="255" inputmode="numeric" />
+                <span>.</span>
+                <input id="dns1_2" type="number" min="0" max="255" inputmode="numeric" />
+                <span>.</span>
+                <input id="dns1_3" type="number" min="0" max="255" inputmode="numeric" />
+                <span>.</span>
+                <input id="dns1_4" type="number" min="0" max="255" inputmode="numeric" />
+              </div>
+            </div>
+
+            <div class="win-row">
+              <label data-i18n="basic.alternate_dns">Alternate DNS</label>
+              <div class="ipv4-segment" data-group="dns2">
+                <input id="dns2_1" type="number" min="0" max="255" inputmode="numeric" />
+                <span>.</span>
+                <input id="dns2_2" type="number" min="0" max="255" inputmode="numeric" />
+                <span>.</span>
+                <input id="dns2_3" type="number" min="0" max="255" inputmode="numeric" />
+                <span>.</span>
+                <input id="dns2_4" type="number" min="0" max="255" inputmode="numeric" />
+              </div>
+            </div>
+          </div>
+
+          <label data-i18n="basic.sntp">SNTP Servers (space-separated)</label>
+          <input id="sntp" name="sntp" type="text" placeholder="ntp.nict.jp time.google.com" />
+
+          <div class="action-row">
+            <button id="basic-save-btn" type="button" class="action" data-i18n="basic.save">Save</button>
+          </div>
+
+          <p id="message-basic" class="tab-message"></p>
+        </form>
+      </section>
+
+      <section id="panel-opcua" class="panel" role="tabpanel">
+        <div class="upload-card">
+          <h2 data-i18n="opcua.heading">OPCUA Server</h2>
+
+          <div class="opcua-status-grid">
+            <div class="opcua-status-item">
+              <span class="opcua-status-label" data-i18n="opcua.service_state">Service State</span>
+              <strong id="opcua-service-state">-</strong>
+            </div>
+          </div>
+
+          <div class="action-row">
+            <button id="opcua-reload-btn" type="button" class="action" data-i18n="actions.reload_status">Reload Status</button>
+            <button id="opcua-start-btn" type="button" class="action" data-i18n="actions.start_server">Start Server</button>
+            <button id="opcua-stop-btn" type="button" class="action danger" data-i18n="actions.stop_server">Stop Server</button>
+          </div>
+        </div>
+
+        <div class="upload-card">
+          <form id="opcua-config-form">
+            <label data-i18n="opcua.product_name">Product Name</label>
+            <input id="opcua-product-name" type="text" maxlength="64" required />
+            <p class="custom-help" data-i18n="opcua.product_name_help">Maximum 64 characters, ASCII only (full-width characters are not allowed).</p>
+
+            <label data-i18n="opcua.software_version">Software Version</label>
+            <input id="opcua-software-version" type="text" maxlength="64" required />
+
+            <label data-i18n="opcua.port">OPCUA Server Port</label>
+            <input id="opcua-port-number" type="number" min="1024" max="65535" inputmode="numeric" required />
+            <p class="custom-help" data-i18n="opcua.port_help">Valid range: 1024 to 65535</p>
+
+            <label data-i18n="opcua.max_sessions">Max Sessions</label>
+            <input id="opcua-max-sessions" type="number" min="1" max="16" inputmode="numeric" required />
+            <p class="custom-help" data-i18n="opcua.max_sessions_help">Valid range: 1 to 16</p>
+
+            <label class="checkbox-row">
+              <input id="opcua-allow-anonymous" type="checkbox" />
+              <span data-i18n="opcua.anonymous">Anonymous Connection</span>
+            </label>
+
+            <h3 data-i18n="opcua.user_auth">User Authentication</h3>
+            <p class="custom-help" data-i18n="opcua.user_auth_help">Define 1 to 5 username/password entries.</p>
+            <div id="opcua-user-list" class="opcua-user-list"></div>
+
+            <div class="action-row">
+              <button id="opcua-user-add-btn" type="button" class="action" data-i18n="actions.add_user">Add User</button>
+              <button id="opcua-config-save-btn" type="button" class="action" data-i18n="actions.save_opcua_settings">Save OPCUA Settings</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="upload-card">
+          <form id="opcua-format-form" enctype="multipart/form-data">
+            <label data-i18n="opcua.address_space_label">Upload Address Space Definition File</label>
+            <input id="opcua_format_file" name="file" type="file" accept=".csv" required />
+            <p class="custom-help" data-i18n="opcua.address_space_help">Upload a new format.csv to replace the current file used by OPCUA Server.</p>
+            <div class="action-row">
+              <button id="opcua-format-upload-btn" type="button" class="action" data-i18n="actions.upload">Upload</button>
+              <button id="opcua-format-download-btn" type="button" class="action" disabled data-i18n="actions.download_current">Download Current</button>
+            </div>
+          </form>
+
+          <p id="opcua-format-status" class="custom-help" data-i18n="opcua.address_space_missing">format.csv not found</p>
+        </div>
+
+        <div class="upload-card">
+          <form id="opcua-cert-form" enctype="multipart/form-data">
+            <label data-i18n="opcua.client_allowlist">Upload Client Allowlist (Client Certificates)</label>
+            <input id="opcua_cert_file" name="file" type="file" accept=".der" required />
+            <p class="custom-help" data-i18n="opcua.client_allowlist_help">Only .der files can be uploaded. Up to 5 files can be stored.</p>
+            <div class="action-row">
+              <button id="opcua-cert-upload-btn" type="button" class="action" data-i18n="actions.upload_certificate">Upload Certificate</button>
+              <button id="opcua-cert-reload-btn" type="button" class="action" data-i18n="actions.reload_list">Reload List</button>
+            </div>
+          </form>
+
+          <h3 data-i18n="opcua.installed_client_certs">Installed Client Certificates</h3>
+          <ul id="opcua-cert-list"></ul>
+        </div>
+
+        <p id="message-opcua" class="tab-message"></p>
+      </section>
+
+      <section id="panel-auth-username" class="panel" role="tabpanel">
+        <form id="auth-username-form">
+          <h2 data-i18n="auth.heading">Account Settings</h2>
+          <p class="custom-help" data-i18n="auth.help">Change the username and password used for login.</p>
+
+          <label data-i18n="auth.username">Username</label>
+          <input id="auth_username" type="text" required />
+
+          <label data-i18n="auth.new_password">New Password (optional)</label>
+          <input id="auth_account_new_password" type="password" maxlength="128" />
+
+          <label data-i18n="auth.confirm_password">Confirm New Password</label>
+          <input id="auth_account_new_password_confirm" type="password" maxlength="128" />
+
+          <p class="custom-help" data-i18n="auth.password_help">New password must be between 3 and 128 characters. No character type requirements.</p>
+
+          <button id="auth-username-save-btn" type="button" class="action" data-i18n="actions.update_account">Update Account Settings</button>
+
+          <p id="message-auth-username" class="tab-message"></p>
+        </form>
+      </section>
+
+      <div id="custom-panels"></div>
+
+      <p id="message" class="message"></p>
+    </main>
+
+    <div id="reconnect-overlay" class="reconnect-overlay hidden">
+      <div class="reconnect-card">
+        <h2 data-i18n="reconnect.heading">Network settings applied</h2>
+        <p data-i18n="reconnect.message.line1">Your connection may be temporarily interrupted due to IP configuration changes.</p>
+        <p data-i18n="reconnect.message.line2">After reconnecting, reopen the settings page before continuing.</p>
+        <button id="reconnect-ack" type="button" class="action" data-i18n="actions.understood">Understood</button>
+      </div>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

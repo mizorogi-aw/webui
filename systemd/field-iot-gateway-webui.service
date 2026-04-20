@@ -1,0 +1,17 @@
+[Unit]
+Description=Field IoT Gateway Nano Web UI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/field-iot-gateway-webui
+ExecStart=/opt/field-iot-gateway-webui/.venv/bin/gunicorn -b 127.0.0.1:18080 app.main:app
+Restart=always
+RestartSec=2
+User=root
+Group=root
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

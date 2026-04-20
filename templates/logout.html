@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Logged Out - Field IoT Gateway Nano</title>
+    <link rel="stylesheet" href="/static/style.css" />
+    <script src="/static/i18n.js"></script>
+    <script>
+      function goToLogin() {
+          // Navigate to /auth/clear-session to clear session server-side, then redirect to /
+          // This ensures session is cleared on server before the next request to /
+          window.location.href = '/auth/clear-session';
+      }
+
+      document.addEventListener('DOMContentLoaded', function () {
+          if (!window.FieldGatewayI18n) {
+              return;
+          }
+          document.title = window.FieldGatewayI18n.t('page.title.logout');
+          window.FieldGatewayI18n.applyTranslations(document);
+      });
+    </script>
+  </head>
+  <body class="logout-page">
+    <div class="bg-shape bg-1"></div>
+    <div class="bg-shape bg-2"></div>
+
+    <main class="logout-shell">
+      <section class="logout-card" aria-live="polite">
+        <p class="logout-eyebrow" data-i18n="logout.eyebrow">Device Console</p>
+        <h1 data-i18n="logout.heading">You have been logged out</h1>
+        <p class="logout-message" data-i18n="logout.message" data-i18n-html="true">Your session has ended.<br />Please log in again.</p>
+        <button class="action logout-login-btn" type="button" onclick="goToLogin();" data-i18n="actions.login">Log In</button>
+      </section>
+    </main>
+  </body>
+</html>
