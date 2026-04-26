@@ -27,6 +27,7 @@ let opcuaOverview = null;
 let lastBasicPayloadSnapshot = null;
 let lastOpcuaConfigSnapshot = null;
 let opcuaRefreshInterval = null;
+let basicInterfaceReloadInProgress = false;
 const RECONNECT_LOCK_STORAGE_KEY = "fieldGatewayReconnectPending";
 const i18n = window.FieldGatewayI18n;
 
@@ -444,6 +445,24 @@ function collectBasicPayloadFromForm() {
   return payload;
 }
 
+function setBasicInterfaceOptions(interfaces, selectedInterface) {
+  const select = document.getElementById("interface");
+  const previousValue = select.value;
+  select.innerHTML = "";
+
+  for (const item of Array.isArray(interfaces) ? interfaces : []) {
+    const option = document.createElement("option");
+    option.value = item.value || "";
+    option.textContent = item.label || item.value || "";
+    select.appendChild(option);
+  }
+
+  const nextValue = selectedInterface || previousValue;
+  if (nextValue) {
+    select.value = nextValue;
+  }
+}
+
 function applyBasicPayloadToForm(payload) {
   document.getElementById("hostname").value = payload.hostname || "";
   document.getElementById("interface").value = payload.interface || "";
@@ -554,11 +573,14 @@ function requestTabChange(targetTabId) {
   setTab(targetTabId);
 }
 
-async function loadBasic() {
-  const data = await requestJson("/api/basic");
+async function loadBasic(interfaceName = "") {
+  const query = interfaceName ? `?interface=${encodeURIComponent(interfaceName)}` : "";
+  const data = await requestJson(`/api/basic${query}`);
+
+  setBasicInterfaceOptions(data.interfaces || [], data.selected_interface || data.network?.interface || "");
 
   document.getElementById("hostname").value = data.hostname || "";
-  document.getElementById("interface").value = data.network?.interface || "";
+  document.getElementById("interface").value = data.selected_interface || data.network?.interface || "";
   document.getElementById("mode").value = data.network?.mode || "dhcp";
 
   const cidr = parseCidr(data.network?.ipv4 || "");
@@ -582,6 +604,34 @@ async function loadBasic() {
     lastBasicPayloadSnapshot = collectBasicPayloadFromForm();
   } catch (_error) {
     lastBasicPayloadSnapshot = null;
+  }
+}
+
+async function handleInterfaceChange() {
+  if (basicInterfaceReloadInProgress) {
+    return;
+  }
+
+  const select = document.getElementById("interface");
+  const nextInterface = select.value;
+  const previousInterface = lastBasicPayloadSnapshot?.interface || "";
+
+  if (lastBasicPayloadSnapshot && hasUnsavedBasicChanges()) {
+    const shouldMove = window.confirm(t("msg.unsaved_basic"));
+    if (!shouldMove) {
+      select.value = previousInterface;
+      return;
+    }
+  }
+
+  basicInterfaceReloadInProgress = true;
+  try {
+    await loadBasic(nextInterface);
+  } catch (error) {
+    select.value = previousInterface;
+    showMessageOn("basic", error.message || t("msg.basic_update_failed"), true);
+  } finally {
+    basicInterfaceReloadInProgress = false;
   }
 }
 
@@ -1344,6 +1394,7 @@ function bindClickOnlyAction(formElement, actionButtonElement, handler) {
 
 function bindEvents() {
   document.getElementById("mode").addEventListener("change", toggleStaticFields);
+  document.getElementById("interface").addEventListener("change", handleInterfaceChange);
 
   bindClickOnlyAction(document.getElementById("basic-form"), document.getElementById("basic-save-btn"), submitBasicForm);
   bindClickOnlyAction(document.getElementById("auth-username-form"), document.getElementById("auth-username-save-btn"), submitAuthUsernameForm);

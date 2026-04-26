@@ -632,6 +632,36 @@ def require_root() -> tuple[bool, tuple]:
     return True, ()
 
 
+def interface_sort_key(name: str) -> tuple:
+    parts = re.split(r"(\d+)", name)
+    normalized = []
+    for part in parts:
+        if not part:
+            continue
+        if part.isdigit():
+            normalized.append((0, int(part)))
+        else:
+            normalized.append((1, part))
+    return tuple(normalized)
+
+
+def is_wired_interface(name: str) -> bool:
+    return bool(re.match(r"^(eth\d+|en[a-z0-9]+)$", name))
+
+
+def build_interface_choices(interfaces: list[str]) -> list[dict[str, str]]:
+    choices = []
+    wired_index = 0
+    for interface in interfaces:
+        if is_wired_interface(interface):
+            label = f"Ether{wired_index} ({interface})"
+            wired_index += 1
+        else:
+            label = interface
+        choices.append({"value": interface, "label": label})
+    return choices
+
+
 def list_system_interfaces() -> list[str]:
     interfaces = []
     try:
@@ -647,7 +677,7 @@ def list_system_interfaces() -> list[str]:
                 interfaces.append(name)
     except Exception:
         return []
-    return interfaces
+    return sorted(dict.fromkeys(interfaces), key=interface_sort_key)
 
 
 def get_default_interface() -> str:
@@ -668,6 +698,14 @@ def get_default_interface() -> str:
 
     interfaces = list_system_interfaces()
     return interfaces[0] if interfaces else DEFAULT_INTERFACE
+
+
+def normalize_interface_name(interface: str | None) -> str:
+    requested = (interface or "").strip()
+    available = list_system_interfaces()
+    if requested and requested in available:
+        return requested
+    return available[0] if available else DEFAULT_INTERFACE
 
 
 def read_resolv_nameservers() -> str:
@@ -693,32 +731,69 @@ def read_resolv_nameservers() -> str:
     return ",".join(servers)
 
 
-def read_mode_from_netplan() -> str:
+def read_netplan_interfaces() -> dict[str, dict[str, str]]:
     if not NETPLAN_PATH.exists():
-        return ""
+        return {}
+
+    entries: dict[str, dict[str, str]] = {}
+    current_interface = ""
+    current_section = ""
+
     try:
-        data = NETPLAN_PATH.read_text(encoding="utf-8")
-        if "dhcp4: false" in data:
-            return "static"
-        if "dhcp4: true" in data:
-            return "dhcp"
+        for raw_line in NETPLAN_PATH.read_text(encoding="utf-8").splitlines():
+            line = raw_line.rstrip("\n")
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+
+            indent = len(line) - len(line.lstrip(" "))
+            if indent == 4 and stripped.endswith(":") and stripped != "ethernets:":
+                current_interface = stripped[:-1]
+                current_section = ""
+                entries[current_interface] = {
+                    "mode": "dhcp",
+                    "ipv4": "",
+                    "gateway4": "",
+                    "dns": "",
+                }
+                continue
+
+            if not current_interface:
+                continue
+
+            if indent == 6 and stripped.startswith("dhcp4:"):
+                value = stripped.split(":", 1)[1].strip().lower()
+                entries[current_interface]["mode"] = "dhcp" if value == "true" else "static"
+                current_section = ""
+                continue
+
+            if indent == 6 and stripped in {"addresses:", "routes:", "nameservers:"}:
+                current_section = stripped[:-1]
+                continue
+
+            if indent == 8 and current_section == "addresses" and stripped.startswith("- "):
+                entries[current_interface]["ipv4"] = stripped[2:].strip()
+                continue
+
+            if indent == 10 and current_section == "routes" and stripped.startswith("via:"):
+                entries[current_interface]["gateway4"] = stripped.split(":", 1)[1].strip()
+                continue
+
+            if indent == 8 and current_section == "nameservers" and stripped.startswith("addresses:") and "[" in stripped and "]" in stripped:
+                raw_values = stripped.split("[", 1)[1].split("]", 1)[0]
+                entries[current_interface]["dns"] = raw_values.replace(" ", "")
     except Exception:
-        return ""
-    return ""
+        return {}
+
+    return entries
 
 
-def read_dns_from_netplan() -> str:
-    if not NETPLAN_PATH.exists():
-        return ""
-    try:
-        data = NETPLAN_PATH.read_text(encoding="utf-8")
-        for line in data.splitlines():
-            if "addresses:" in line and "[" in line and "]" in line:
-                raw = line.split("[", 1)[1].split("]", 1)[0]
-                return raw.replace(" ", "")
-    except Exception:
-        return ""
-    return ""
+def read_mode_from_netplan(interface: str) -> str:
+    return read_netplan_interfaces().get(interface, {}).get("mode", "")
+
+
+def read_dns_from_netplan(interface: str) -> str:
+    return read_netplan_interfaces().get(interface, {}).get("dns", "")
 
 
 def read_mode_from_dhcpcd(interface: str) -> str:
@@ -791,7 +866,14 @@ def get_network_info(interface: str) -> dict:
     except Exception:
         pass
 
-    mode = read_mode_from_netplan()
+    netplan_entries = read_netplan_interfaces()
+    netplan_info = netplan_entries.get(interface, {})
+    if netplan_info.get("ipv4") and not info["ipv4"]:
+        info["ipv4"] = netplan_info["ipv4"]
+    if netplan_info.get("gateway4") and not info["gateway4"]:
+        info["gateway4"] = netplan_info["gateway4"]
+
+    mode = read_mode_from_netplan(interface)
     if not mode:
         mode = read_mode_from_dhcpcd(interface)
     if not mode:
@@ -799,7 +881,7 @@ def get_network_info(interface: str) -> dict:
     if mode:
         info["mode"] = mode
 
-    dns = read_dns_from_netplan()
+    dns = read_dns_from_netplan(interface)
     if not dns:
         dns = read_resolv_nameservers()
     info["dns"] = dns
@@ -847,43 +929,41 @@ def validate_static_payload(payload: dict) -> tuple[bool, str]:
 def write_netplan(payload: dict) -> None:
     interface = payload.get("interface", DEFAULT_INTERFACE).strip() or DEFAULT_INTERFACE
     mode = payload.get("mode", "dhcp").strip()
+    entries = read_netplan_interfaces()
+    entries[interface] = {
+        "mode": mode,
+        "ipv4": payload.get("ipv4", "").strip(),
+        "gateway4": payload.get("gateway4", "").strip(),
+        "dns": payload.get("dns", "").strip(),
+    }
 
-    if mode == "dhcp":
-        content = (
-            "network:\n"
-            "  version: 2\n"
-            "  renderer: networkd\n"
-            "  ethernets:\n"
-            f"    {interface}:\n"
-            "      dhcp4: true\n"
-        )
-    else:
-        ipv4 = payload.get("ipv4", "").strip()
-        gateway4 = payload.get("gateway4", "").strip()
-        dns = payload.get("dns", "").strip()
-        dns_values = ", ".join([v.strip() for v in dns.split(",") if v.strip()])
+    lines = [
+        "network:",
+        "  version: 2",
+        "  renderer: networkd",
+        "  ethernets:",
+    ]
 
-        content = (
-            "network:\n"
-            "  version: 2\n"
-            "  renderer: networkd\n"
-            "  ethernets:\n"
-            f"    {interface}:\n"
-            "      dhcp4: false\n"
-            "      addresses:\n"
-            f"        - {ipv4}\n"
-            f"      routes:\n"
-            f"        - to: default\n"
-            f"          via: {gateway4}\n"
-        )
+    for current_interface in sorted(entries, key=interface_sort_key):
+        current = entries[current_interface]
+        lines.append(f"    {current_interface}:")
+        if current.get("mode", "dhcp") == "dhcp":
+            lines.append("      dhcp4: true")
+            continue
 
+        lines.append("      dhcp4: false")
+        lines.append("      addresses:")
+        lines.append(f"        - {current.get('ipv4', '')}")
+        lines.append("      routes:")
+        lines.append("        - to: default")
+        lines.append(f"          via: {current.get('gateway4', '')}")
+
+        dns_values = ", ".join([v.strip() for v in current.get("dns", "").split(",") if v.strip()])
         if dns_values:
-            content += (
-                "      nameservers:\n"
-                f"        addresses: [{dns_values}]\n"
-            )
+            lines.append("      nameservers:")
+            lines.append(f"        addresses: [{dns_values}]")
 
-    NETPLAN_PATH.write_text(content, encoding="utf-8")
+    NETPLAN_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def write_dhcpcd(payload: dict) -> None:
@@ -1138,13 +1218,16 @@ def set_auth_settings():
 @app.get("/api/basic")
 @auth_required
 def get_basic():
-    interface = get_default_interface()
+    interfaces = list_system_interfaces()
+    interface = normalize_interface_name(request.args.get("interface") or get_default_interface())
     network = get_network_info(interface)
 
     return jsonify(
         {
             "hostname": socket.gethostname(),
             "network": network,
+            "interfaces": build_interface_choices(interfaces),
+            "selected_interface": interface,
             "sntp": read_sntp_servers(),
         }
     )
@@ -1161,6 +1244,7 @@ def apply_basic():
     hostname = payload.get("hostname", "").strip()
     mode = payload.get("mode", "dhcp").strip()
     sntp = payload.get("sntp", "").strip()
+    payload["interface"] = normalize_interface_name(payload.get("interface"))
 
     if not hostname:
         return jsonify({"error": "hostname is required"}), 400
