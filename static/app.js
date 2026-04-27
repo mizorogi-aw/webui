@@ -26,8 +26,15 @@ let uploadMaxFiles = DEFAULT_UPLOAD_MAX_FILES;
 let opcuaOverview = null;
 let lastBasicPayloadSnapshot = null;
 let lastOpcuaConfigSnapshot = null;
+let lastFormatGridSnapshot = null;
 let opcuaRefreshInterval = null;
 let basicInterfaceReloadInProgress = false;
+let formatGridRows = [];
+let formatGridNamespaces = []; // array of {label: string} (max 5)
+let formatGridValidationTimer = null;
+let formatGridValidationRequestId = 0;
+const FORMAT_GRID_NS_MAX = 5;
+const FORMAT_GRID_VALIDATE_DEBOUNCE_MS = 250;
 const RECONNECT_LOCK_STORAGE_KEY = "fieldGatewayReconnectPending";
 const i18n = window.FieldGatewayI18n;
 
@@ -92,8 +99,32 @@ function applyLanguage() {
   }
 
   if (opcuaOverview) {
-    renderOpcuaOverview();
+    renderOpcuaOverview(!hasUnsavedOpcuaChanges());
   }
+
+  applyLanguageToGrid();
+}
+
+function applyLanguageToGrid() {
+  // Update dynamically created grid row buttons (no data-i18n attribute)
+  const tbody = document.getElementById("opcua-grid-body");
+  if (tbody) {
+    for (const btn of tbody.querySelectorAll(".grid-ins-btn")) {
+      btn.textContent = t("opcua.grid.insert_row");
+    }
+    for (const btn of tbody.querySelectorAll(".grid-del-btn")) {
+      btn.textContent = t("opcua.grid.delete_row");
+    }
+  }
+
+  // Re-render the NameSpace editor to pick up new language
+  const container = document.getElementById("opcua-ns-editor-rows");
+  if (container && formatGridNamespaces.length > 0) {
+    renderNamespaceEditor(formatGridNamespaces.map((n) => n.label));
+  }
+
+  // Update toggle button label
+  updateToggleButtonLabel();
 }
 
 function toggleLanguage() {
@@ -238,7 +269,7 @@ function startOpcuaAutoRefresh() {
   }
   opcuaRefreshInterval = window.setInterval(async () => {
     try {
-      await loadOpcua();
+      await loadOpcua({ autoRefresh: true });
     } catch (error) {
       console.error("OPCUA auto-refresh error:", error);
       // Continue refreshing even if there's an error
@@ -538,6 +569,25 @@ function hasUnsavedOpcuaChanges() {
 
   const currentDraft = collectOpcuaConfigDraft();
   return JSON.stringify(currentDraft) !== JSON.stringify(lastOpcuaConfigSnapshot);
+}
+
+function collectFormatGridDraft() {
+  return {
+    rows: collectGridRows(),
+    ns_labels: formatGridNamespaces.map((n) => n.label),
+  };
+}
+
+function hasUnsavedFormatGridChanges() {
+  if (!lastFormatGridSnapshot) {
+    return false;
+  }
+  try {
+    const current = JSON.stringify(collectFormatGridDraft());
+    return current !== lastFormatGridSnapshot;
+  } catch (_error) {
+    return false;
+  }
 }
 
 function requestTabChange(targetTabId) {
@@ -878,7 +928,7 @@ function collectOpcuaConfigPayload() {
   };
 }
 
-function renderOpcuaOverview() {
+function renderOpcuaOverview(refreshConfig = true) {
   const installed = Boolean(opcuaOverview?.installed);
   const service = opcuaOverview?.service || {};
   const serviceText = formatOpcuaServiceState(service);
@@ -900,12 +950,709 @@ function renderOpcuaOverview() {
   setOpcuaServiceActionEnabled(service);
   renderOpcuaFormatStatus();
   renderOpcuaClientCerts();
-  renderOpcuaConfig();
+  if (refreshConfig) {
+    renderOpcuaConfig();
+  }
 }
 
-async function loadOpcua() {
+// ---------------------------------------------------------------------------
+// format.csv Grid Editor
+// ---------------------------------------------------------------------------
+
+const GRID_DATA_TYPES = [
+  { value: "", label: "" },
+  { value: "Boolean", label: "Boolean" },
+  { value: "INT16", label: "INT16" },
+  { value: "UINT16", label: "UINT16" },
+  { value: "INT32", label: "INT32" },
+  { value: "UINT32", label: "UINT32" },
+  { value: "FLOAT", label: "FLOAT" },
+  { value: "INT64", label: "INT64" },
+  { value: "UINT64", label: "UINT64" },
+  { value: "DOUBLE", label: "DOUBLE" },
+  { value: "String", label: "String" },
+];
+
+const GRID_ACCESS_LEVELS = [
+  { value: "", label: "" },
+  { value: "1", label: "Read" },
+  { value: "2", label: "Write" },
+  { value: "3", label: "Read/Write" },
+];
+
+function createGridSelect(options, currentValue, className) {
+  const sel = document.createElement("select");
+  if (className) sel.className = className;
+  for (const opt of options) {
+    const el = document.createElement("option");
+    if (typeof opt === "string") {
+      el.value = opt;
+      el.textContent = opt || "—";
+    } else {
+      el.value = opt.value;
+      el.textContent = opt.label || "—";
+    }
+    if ((typeof opt === "string" ? opt : opt.value) === currentValue) el.selected = true;
+    sel.appendChild(el);
+  }
+  return sel;
+}
+
+function createGridCell(content) {
+  const td = document.createElement("td");
+  td.appendChild(content);
+  return td;
+}
+
+function getFormatGridValidationStatusElement() {
+  return document.getElementById("opcua-grid-validation-status");
+}
+
+function setFormatGridValidationStatus(message = "", isError = false) {
+  const el = getFormatGridValidationStatusElement();
+  if (!el) return;
+  el.textContent = message;
+  el.classList.toggle("is-error", Boolean(message) && isError);
+  el.classList.toggle("is-ok", Boolean(message) && !isError);
+}
+
+function clearFormatGridValidationStatus() {
+  setFormatGridValidationStatus("");
+}
+
+function bindFormatGridValidationTrigger(element, eventName = "change") {
+  if (!element) return;
+  element.addEventListener(eventName, () => {
+    scheduleFormatGridValidation();
+  });
+}
+
+function gridNodeClassChangeWillClearValues(tr, nextNodeClass) {
+  if (nextNodeClass === "Variable") {
+    return Boolean(tr.querySelector(".grid-event-notifier")?.checked);
+  }
+
+  if (nextNodeClass === "Object") {
+    return Boolean(
+      tr.querySelector(".grid-data-type")?.value
+      || tr.querySelector(".grid-access")?.value
+      || tr.querySelector(".grid-historizing")?.checked
+      || tr.querySelector(".grid-param1")?.checked
+    );
+  }
+
+  return false;
+}
+
+function applyGridNodeClassTransition(tr, nextNodeClass) {
+  const dataTypeSel = tr.querySelector(".grid-data-type");
+  const accessSel = tr.querySelector(".grid-access");
+  const histCheck = tr.querySelector(".grid-historizing");
+  const evtCheck = tr.querySelector(".grid-event-notifier");
+  const param1Check = tr.querySelector(".grid-param1");
+
+  if (nextNodeClass === "Variable") {
+    if (evtCheck) evtCheck.checked = false;
+    return;
+  }
+
+  if (nextNodeClass === "Object") {
+    if (dataTypeSel) dataTypeSel.value = "";
+    if (accessSel) accessSel.value = "";
+    if (histCheck) histCheck.checked = false;
+    if (param1Check) param1Check.checked = false;
+    const cyclicInput = tr.querySelector(".grid-cyclic");
+    if (cyclicInput) cyclicInput.value = "";
+  }
+}
+
+function handleGridNodeClassChange(tr, nodeClassSel) {
+  const prevNodeClass = nodeClassSel.dataset.previousValue || nodeClassSel.value;
+  const nextNodeClass = nodeClassSel.value;
+
+  if (prevNodeClass === nextNodeClass) {
+    updateGridRowForNodeClass(tr, nextNodeClass);
+    scheduleFormatGridValidation();
+    return;
+  }
+
+  if (gridNodeClassChangeWillClearValues(tr, nextNodeClass)) {
+    const confirmed = window.confirm(
+      t("opcua.grid.node_class_change_confirm", { nodeClass: nextNodeClass }),
+    );
+    if (!confirmed) {
+      nodeClassSel.value = prevNodeClass;
+      return;
+    }
+  }
+
+  applyGridNodeClassTransition(tr, nextNodeClass);
+  updateGridRowForNodeClass(tr, nextNodeClass);
+  nodeClassSel.dataset.previousValue = nextNodeClass;
+  scheduleFormatGridValidation();
+}
+
+function enforceSingleObjectEventNotifier(activeTr) {
+  const tbody = document.getElementById("opcua-grid-body");
+  if (!tbody) return;
+  for (const tr of tbody.querySelectorAll("tr")) {
+    if (tr === activeTr) continue;
+    const nodeClassSel = tr.querySelector(".grid-node-class");
+    const evtCheck = tr.querySelector(".grid-event-notifier");
+    if (!nodeClassSel || !evtCheck) continue;
+    if (nodeClassSel.value === "Object") {
+      evtCheck.checked = false;
+    }
+  }
+}
+
+function buildNamespaceOptions(selectedIndex) {
+  // Build options array for namespace select from formatGridNamespaces
+  const opts = formatGridNamespaces.map((ns, i) => ({
+    value: String(i),
+    label: ns.label || t("opcua.grid.ns_unnamed_label", { n: i + 1 }),
+  }));
+  if (opts.length === 0) {
+    opts.push({ value: "0", label: t("opcua.grid.ns_unnamed_label", { n: 1 }) });
+  }
+  return opts;
+}
+
+function adjustGridNsIndexAfterDelete(delIdx) {
+  // Reset rows using the deleted namespace to index 0.
+  // Decrement rows using a higher index so they still point to the same namespace.
+  const tbody = document.getElementById("opcua-grid-body");
+  if (!tbody) return;
+  for (const tr of tbody.querySelectorAll("tr")) {
+    const sel = tr.querySelector(".grid-ns-index");
+    if (!sel) continue;
+    const current = parseInt(sel.value, 10);
+    if (current === delIdx) {
+      sel.value = "0";
+    } else if (current > delIdx) {
+      sel.value = String(current - 1);
+    }
+  }
+}
+
+function createGridRow(rowData, rowIndex) {
+  const tr = document.createElement("tr");
+  tr.dataset.rowIndex = rowIndex;
+  tr.dataset.originalRow = rowData._row !== undefined ? String(rowData._row) : "-1";
+
+  // NodeClass
+  const nodeClassSel = createGridSelect(["Object", "Variable"], rowData.NodeClass, "grid-node-class");
+  nodeClassSel.dataset.previousValue = rowData.NodeClass || "Variable";
+  nodeClassSel.addEventListener("change", () => {
+    handleGridNodeClassChange(tr, nodeClassSel);
+  });
+  tr.appendChild(createGridCell(nodeClassSel));
+
+  // BrowsePath
+  const bpInput = document.createElement("input");
+  bpInput.type = "text";
+  bpInput.value = rowData.BrowsePath || "";
+  bpInput.className = "grid-browse-path";
+  bindFormatGridValidationTrigger(bpInput, "input");
+  tr.appendChild(createGridCell(bpInput));
+
+  // BrowseName
+  const bnInput = document.createElement("input");
+  bnInput.type = "text";
+  bnInput.value = rowData.BrowseName || "";
+  bnInput.className = "grid-browse-name";
+  bindFormatGridValidationTrigger(bnInput, "input");
+  tr.appendChild(createGridCell(bnInput));
+
+  // NamespaceIndex (select) - separate column
+  const nsSel = createGridSelect(buildNamespaceOptions(), String(rowData.NamespaceIndex || "0"), "grid-ns-index");
+  bindFormatGridValidationTrigger(nsSel);
+  tr.appendChild(createGridCell(nsSel));
+
+  // NodeIdNumber (text input) - separate column
+  const idNumInput = document.createElement("input");
+  idNumInput.type = "text";
+  idNumInput.value = rowData.NodeIdNumber || "";
+  idNumInput.className = "grid-node-id-num";
+  idNumInput.placeholder = "e.g. 10001";
+  bindFormatGridValidationTrigger(idNumInput, "input");
+  tr.appendChild(createGridCell(idNumInput));
+
+  // DataType
+  const dtSel = createGridSelect(GRID_DATA_TYPES, rowData.DataType || "", "grid-data-type");
+  bindFormatGridValidationTrigger(dtSel);
+  tr.appendChild(createGridCell(dtSel));
+
+  // Access
+  const accessSel = createGridSelect(GRID_ACCESS_LEVELS, rowData.Access || "", "grid-access");
+  bindFormatGridValidationTrigger(accessSel);
+  tr.appendChild(createGridCell(accessSel));
+
+  // Historizing
+  const histCheck = document.createElement("input");
+  histCheck.type = "checkbox";
+  histCheck.className = "grid-historizing";
+  histCheck.checked = rowData.Historizing === "1";
+  histCheck.title = t("opcua.grid.hint.historizing_variable_only");
+  bindFormatGridValidationTrigger(histCheck);
+  tr.appendChild(createGridCell(histCheck));
+
+  // EventNotifier (Object only)
+  const evtCheck = document.createElement("input");
+  evtCheck.type = "checkbox";
+  evtCheck.className = "grid-event-notifier";
+  evtCheck.checked = rowData.EventNotifier === "1";
+  evtCheck.title = t("opcua.grid.hint.event_object_only");
+  evtCheck.addEventListener("change", () => {
+    if (evtCheck.checked) {
+      enforceSingleObjectEventNotifier(tr);
+    }
+    scheduleFormatGridValidation();
+  });
+  tr.appendChild(createGridCell(evtCheck));
+
+  // Event detection flag for Variable nodes (stored in Param1: "1" or "0")
+  const param1Check = document.createElement("input");
+  param1Check.type = "checkbox";
+  param1Check.className = "grid-param1";
+  param1Check.checked = rowData.Param1 === "1";
+  param1Check.title = t("opcua.grid.hint.param1_detect");
+  bindFormatGridValidationTrigger(param1Check);
+  tr.appendChild(createGridCell(param1Check));
+
+  // Cyclic interval (Variable only)
+  const cyclicInput = document.createElement("input");
+  cyclicInput.type = "number";
+  cyclicInput.className = "grid-cyclic";
+  cyclicInput.value = rowData.Cyclic || "1000";
+  cyclicInput.min = "250";
+  cyclicInput.max = "300000";
+  cyclicInput.placeholder = "1000";
+  cyclicInput.title = t("opcua.grid.hint.cyclic");
+  bindFormatGridValidationTrigger(cyclicInput, "input");
+  tr.appendChild(createGridCell(cyclicInput));
+
+  // Insert button (add row after this row)
+  const insBtn = document.createElement("button");
+  insBtn.type = "button";
+  insBtn.className = "action grid-ins-btn";
+  insBtn.textContent = t("opcua.grid.insert_row");
+  insBtn.addEventListener("click", () => {
+    insertFormatGridRowAfter(tr);
+  });
+
+  // Delete button
+  const delBtn = document.createElement("button");
+  delBtn.type = "button";
+  delBtn.className = "action danger grid-del-btn";
+  delBtn.textContent = t("opcua.grid.delete_row");
+  delBtn.addEventListener("click", () => {
+    if (!window.confirm(t("opcua.grid.delete_confirm"))) return;
+    tr.remove();
+    updateGridRowIndices();
+    updateGridRowCount();
+    scheduleFormatGridValidation();
+  });
+  const actionTd = document.createElement("td");
+  actionTd.className = "grid-action-cell";
+  actionTd.appendChild(insBtn);
+  actionTd.appendChild(delBtn);
+  tr.appendChild(actionTd);
+
+  updateGridRowForNodeClass(tr, rowData.NodeClass);
+  return tr;
+}
+
+function updateGridRowForNodeClass(tr, nodeClass) {
+  const isVariable = nodeClass === "Variable";
+  const isObject = nodeClass === "Object";
+  const dataTypeSel = tr.querySelector(".grid-data-type");
+  const accessSel = tr.querySelector(".grid-access");
+  const histCheck = tr.querySelector(".grid-historizing");
+  const evtCheck = tr.querySelector(".grid-event-notifier");
+  const param1Check = tr.querySelector(".grid-param1");
+  const cyclicInput = tr.querySelector(".grid-cyclic");
+
+  if (dataTypeSel) dataTypeSel.disabled = !isVariable;
+  if (accessSel) accessSel.disabled = !isVariable;
+  if (histCheck) histCheck.disabled = !isVariable;
+  if (evtCheck) evtCheck.disabled = !isObject;
+  if (param1Check) param1Check.disabled = !isVariable;
+  if (cyclicInput) cyclicInput.disabled = !isVariable;
+
+  // Reduce confusion: hide controls that are not applicable for the current NodeClass.
+  if (histCheck) histCheck.style.visibility = isVariable ? "visible" : "hidden";
+  if (evtCheck) evtCheck.style.visibility = isObject ? "visible" : "hidden";
+  if (param1Check) param1Check.style.visibility = isVariable ? "visible" : "hidden";
+  if (cyclicInput) cyclicInput.style.visibility = isVariable ? "visible" : "hidden";
+
+  // Keep UI state consistent when switching NodeClass.
+  if (isVariable && evtCheck) {
+    evtCheck.checked = false;
+  }
+  if (isObject) {
+    if (histCheck) histCheck.checked = false;
+    if (param1Check) param1Check.checked = false;
+    if (cyclicInput) cyclicInput.value = "";
+  }
+}
+
+function updateGridRowIndices() {
+  const tbody = document.getElementById("opcua-grid-body");
+  let idx = 0;
+  for (const tr of tbody.querySelectorAll("tr")) {
+    tr.dataset.rowIndex = idx++;
+  }
+}
+
+function updateGridRowCount() {
+  const tbody = document.getElementById("opcua-grid-body");
+  const count = tbody.querySelectorAll("tr").length;
+  const el = document.getElementById("opcua-grid-row-count");
+  if (el) el.textContent = t("opcua.grid.row_count", { count });
+}
+
+function collectGridRows() {
+  const tbody = document.getElementById("opcua-grid-body");
+  const rows = [];
+  for (const tr of tbody.querySelectorAll("tr")) {
+    const nodeClass = tr.querySelector(".grid-node-class").value;
+    const histCheck = tr.querySelector(".grid-historizing");
+    const evtCheck = tr.querySelector(".grid-event-notifier");
+    rows.push({
+      _row: parseInt(tr.dataset.originalRow ?? "-1"),
+      NodeClass: nodeClass,
+      BrowsePath: tr.querySelector(".grid-browse-path").value.trim(),
+      BrowseName: tr.querySelector(".grid-browse-name").value.trim(),
+      NamespaceIndex: tr.querySelector(".grid-ns-index").value,
+      NodeIdNumber: tr.querySelector(".grid-node-id-num").value.trim(),
+      DataType: nodeClass === "Variable" ? tr.querySelector(".grid-data-type").value : "",
+      Access: nodeClass === "Variable" ? tr.querySelector(".grid-access").value : "",
+      Historizing: (nodeClass === "Variable" && histCheck.checked) ? "1" : "",
+      EventNotifier: (nodeClass === "Object" && evtCheck.checked) ? "1" : "",
+      Cyclic: nodeClass === "Variable" ? (tr.querySelector(".grid-cyclic").value.trim() || "1000") : "",
+      Param1: nodeClass === "Variable" ? (tr.querySelector(".grid-param1").checked ? "1" : "0") : "",
+    });
+  }
+  return rows;
+}
+
+function renderFormatGrid(rows) {
+  formatGridRows = rows;
+  const tbody = document.getElementById("opcua-grid-body");
+  tbody.innerHTML = "";
+  rows.forEach((row, idx) => {
+    tbody.appendChild(createGridRow(row, idx));
+  });
+  updateGridRowCount();
+}
+
+function renderNamespaceEditor(nsLabels) {
+  formatGridNamespaces = (nsLabels || []).map((lbl) => ({ label: lbl }));
+  const container = document.getElementById("opcua-ns-editor-rows");
+  if (!container) return;
+  container.innerHTML = "";
+  formatGridNamespaces.forEach((ns, idx) => {
+    container.appendChild(createNamespaceRow(ns.label, idx));
+  });
+  updateNamespaceAddBtn();
+}
+
+function createNamespaceRow(label, idx) {
+  const div = document.createElement("div");
+  div.className = "ns-editor-row";
+  div.dataset.nsIndex = idx;
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "ns-label-input";
+  input.value = label || "";
+  input.placeholder = t("opcua.grid.ns_label_placeholder");
+  input.addEventListener("input", () => {
+    formatGridNamespaces[idx] = { label: input.value };
+    rebuildNsSelects();
+  });
+  div.appendChild(input);
+
+  const delBtn = document.createElement("button");
+  delBtn.type = "button";
+  delBtn.className = "action danger ns-del-btn";
+  delBtn.textContent = t("opcua.grid.delete_row");
+  if (idx === 0) {
+    delBtn.disabled = true;
+    delBtn.title = t("opcua.grid.ns_first_row_protected");
+  } else {
+    delBtn.addEventListener("click", () => {
+      if (!window.confirm(t("opcua.grid.ns_delete_confirm"))) return;
+      adjustGridNsIndexAfterDelete(idx);
+      formatGridNamespaces.splice(idx, 1);
+      renderNamespaceEditor(formatGridNamespaces.map((n) => n.label));
+      rebuildNsSelects();
+      scheduleFormatGridValidation();
+    });
+  }
+  div.appendChild(delBtn);
+
+  return div;
+}
+
+function updateNamespaceAddBtn() {
+  const btn = document.getElementById("opcua-ns-add-btn");
+  if (btn) {
+    btn.disabled = formatGridNamespaces.length >= FORMAT_GRID_NS_MAX;
+  }
+}
+
+function addNamespaceRow() {
+  if (formatGridNamespaces.length >= FORMAT_GRID_NS_MAX) return;
+  formatGridNamespaces.push({ label: "" });
+  renderNamespaceEditor(formatGridNamespaces.map((n) => n.label));
+  rebuildNsSelects();
+}
+
+function insertNamespaceRowAfter(idx) {
+  if (formatGridNamespaces.length >= FORMAT_GRID_NS_MAX) return;
+  formatGridNamespaces.splice(idx + 1, 0, { label: "" });
+  renderNamespaceEditor(formatGridNamespaces.map((n) => n.label));
+  rebuildNsSelects();
+}
+
+function rebuildNsSelects() {
+  // Update all namespace select elements in grid rows
+  const tbody = document.getElementById("opcua-grid-body");
+  if (!tbody) return;
+  const opts = buildNamespaceOptions();
+  for (const tr of tbody.querySelectorAll("tr")) {
+    const sel = tr.querySelector(".grid-ns-index");
+    if (!sel) continue;
+    const currentVal = sel.value;
+    sel.innerHTML = "";
+    for (const opt of opts) {
+      const el = document.createElement("option");
+      el.value = opt.value;
+      el.textContent = opt.label;
+      if (opt.value === currentVal) el.selected = true;
+      sel.appendChild(el);
+    }
+  }
+}
+
+function clearGridErrorHighlights() {
+  const tbody = document.getElementById("opcua-grid-body");
+  if (!tbody) return;
+  for (const tr of tbody.querySelectorAll("tr.grid-row-error")) {
+    tr.classList.remove("grid-row-error");
+    for (const el of tr.querySelectorAll(".grid-cell-error")) {
+      el.classList.remove("grid-cell-error");
+    }
+  }
+}
+
+function applyGridErrors(errors) {
+  clearGridErrorHighlights();
+  const tbody = document.getElementById("opcua-grid-body");
+  const rows = [...tbody.querySelectorAll("tr")];
+  const fieldClassMap = {
+    NodeClass: ".grid-node-class",
+    BrowsePath: ".grid-browse-path",
+    BrowseName: ".grid-browse-name",
+    NodeIdNumber: ".grid-node-id-num",
+    DataType: ".grid-data-type",
+    Access: ".grid-access",
+    Historizing: ".grid-historizing",
+    EventNotifier: ".grid-event-notifier",
+    Cyclic: ".grid-cyclic",
+    Param1: ".grid-param1",
+  };
+  for (const err of errors) {
+    const tr = rows[err.row];
+    if (!tr) continue;
+    tr.classList.add("grid-row-error");
+    const cls = fieldClassMap[err.field];
+    if (cls) {
+      const el = tr.querySelector(cls);
+      if (el) el.classList.add("grid-cell-error");
+    }
+  }
+}
+
+async function validateFormatGridInline() {
+  const requestId = ++formatGridValidationRequestId;
+  let data;
+
+  try {
+    data = await requestJson("/api/opcua/format-grid/validate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(collectFormatGridDraft()),
+    });
+  } catch (error) {
+    if (requestId !== formatGridValidationRequestId) return;
+    setFormatGridValidationStatus(error.message || t("opcua.grid.inline_validation_unavailable"), true);
+    return;
+  }
+
+  if (requestId !== formatGridValidationRequestId) return;
+
+  const errors = Array.isArray(data?.errors) ? data.errors : [];
+  if (errors.length > 0) {
+    applyGridErrors(errors);
+    const first = errors[0];
+    const detail = first && first.message ? `: ${first.message}` : "";
+    setFormatGridValidationStatus(`${t("opcua.grid.validation_failed")}${detail}`, true);
+    return;
+  }
+
+  clearGridErrorHighlights();
+  clearFormatGridValidationStatus();
+}
+
+function scheduleFormatGridValidation(delay = FORMAT_GRID_VALIDATE_DEBOUNCE_MS) {
+  if (formatGridValidationTimer) {
+    window.clearTimeout(formatGridValidationTimer);
+  }
+  formatGridValidationTimer = window.setTimeout(() => {
+    formatGridValidationTimer = null;
+    validateFormatGridInline();
+  }, delay);
+}
+
+function setFormatGridToggleButtonVisible(visible) {
+  const btn = document.getElementById("opcua-grid-toggle-btn");
+  if (btn) btn.style.display = visible ? "" : "none";
+}
+
+function isFormatGridOpen() {
+  const gridCard = document.getElementById("opcua-grid-card");
+  return gridCard && gridCard.style.display !== "none";
+}
+
+function updateToggleButtonLabel() {
+  const btn = document.getElementById("opcua-grid-toggle-btn");
+  if (!btn) return;
+  const open = isFormatGridOpen();
+  btn.textContent = t(open ? "opcua.grid.edit_close" : "opcua.grid.edit_open");
+  btn.setAttribute("aria-expanded", String(open));
+}
+
+function toggleFormatGridEditor() {
+  const gridCard = document.getElementById("opcua-grid-card");
+  if (!gridCard) return;
+  const opening = gridCard.style.display === "none";
+  gridCard.style.display = opening ? "" : "none";
+  updateToggleButtonLabel();
+}
+
+async function loadFormatGrid() {
+  const gridCard = document.getElementById("opcua-grid-card");
+  try {
+    const data = await requestJson("/api/opcua/format-grid");
+    renderNamespaceEditor(data.ns_labels || []);
+    renderFormatGrid(data.rows || []);
+    lastFormatGridSnapshot = JSON.stringify({ rows: data.rows || [], ns_labels: data.ns_labels || [] });
+    formatGridValidationRequestId += 1;
+    if (formatGridValidationTimer) {
+      window.clearTimeout(formatGridValidationTimer);
+      formatGridValidationTimer = null;
+    }
+    clearGridErrorHighlights();
+    clearFormatGridValidationStatus();
+    // Show toggle button but keep grid panel in its current open/closed state
+    setFormatGridToggleButtonVisible(true);
+    updateToggleButtonLabel();
+  } catch (_err) {
+    // No format.csv or not installed – hide both toggle and grid panel
+    setFormatGridToggleButtonVisible(false);
+    if (gridCard) gridCard.style.display = "none";
+  }
+}
+
+async function saveFormatGrid() {
+  const rows = collectGridRows();
+  const ns_labels = formatGridNamespaces.map((n) => n.label);
+  clearGridErrorHighlights();
+  let data;
+  try {
+    data = await requestJson("/api/opcua/format-grid", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rows, ns_labels }),
+    });
+  } catch (error) {
+    showMessageOn("opcua", error.message || t("opcua.grid.save_failed"), true);
+    return;
+  }
+
+  if (data && data.errors) {
+    applyGridErrors(data.errors);
+    const first = data.errors[0];
+    const detail = first && first.message ? `: ${first.message}` : "";
+    showMessageOn("opcua", `${t("opcua.grid.validation_failed")}${detail}`, true);
+    return;
+  }
+
+  lastFormatGridSnapshot = JSON.stringify({ rows, ns_labels });
+  showMessageOn("opcua", t("opcua.grid.saved", { count: data.row_count }));
+}
+
+async function assignGridNodeIds() {
+  const rows = collectGridRows();
+  let data;
+  try {
+    data = await requestJson("/api/opcua/format-grid/assign-node-ids", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ rows }),
+    });
+  } catch (error) {
+    showMessageOn("opcua", error.message || t("opcua.grid.assign_failed"), true);
+    return;
+  }
+  renderFormatGrid(data.rows || []);
+  showMessageOn("opcua", t("opcua.grid.assigned"));
+}
+
+function insertFormatGridRowAfter(afterTr) {
+  const tbody = document.getElementById("opcua-grid-body");
+  const defaultNs = formatGridNamespaces.length > 0 ? "0" : "0";
+  const emptyRow = {
+    NodeClass: "Variable", BrowsePath: "", BrowseName: "",
+    NamespaceIndex: defaultNs, NodeIdNumber: "",
+    DataType: "", Access: "", Historizing: "", EventNotifier: "", Cyclic: "1000", Param1: "",
+  };
+  const newTr = createGridRow(emptyRow, 0);
+  if (afterTr && afterTr.parentNode === tbody) {
+    afterTr.insertAdjacentElement("afterend", newTr);
+  } else {
+    tbody.appendChild(newTr);
+  }
+  updateGridRowIndices();
+  updateGridRowCount();
+  scheduleFormatGridValidation();
+}
+
+function addFormatGridRow() {
+  const tbody = document.getElementById("opcua-grid-body");
+  const defaultNs = formatGridNamespaces.length > 0 ? "0" : "0";
+  const emptyRow = {
+    NodeClass: "Variable", BrowsePath: "", BrowseName: "",
+    NamespaceIndex: defaultNs, NodeIdNumber: "",
+    DataType: "", Access: "", Historizing: "", EventNotifier: "", Cyclic: "1000", Param1: "",
+  };
+  tbody.appendChild(createGridRow(emptyRow, tbody.querySelectorAll("tr").length));
+  updateGridRowCount();
+  scheduleFormatGridValidation();
+}
+
+async function loadOpcua(options = {}) {
+  const autoRefresh = Boolean(options.autoRefresh);
   opcuaOverview = await requestJson("/api/opcua");
-  renderOpcuaOverview();
+  const skipConfigRefresh = autoRefresh && hasUnsavedOpcuaChanges();
+  const skipGridRefresh = autoRefresh && hasUnsavedFormatGridChanges();
+  renderOpcuaOverview(!skipConfigRefresh);
+  if (!skipGridRefresh) {
+    await loadFormatGrid();
+  }
 }
 
 async function loadAuthSettings() {
@@ -1415,6 +2162,16 @@ function bindEvents() {
   document.getElementById("opcua-cert-reload-btn").addEventListener("click", async () => {
     await loadOpcua();
     showMessageOn("opcua", t("msg.cert_list_reloaded"));
+  });
+
+  document.getElementById("opcua-grid-toggle-btn").addEventListener("click", toggleFormatGridEditor);
+  document.getElementById("opcua-grid-add-btn").addEventListener("click", addFormatGridRow);
+  document.getElementById("opcua-ns-add-btn").addEventListener("click", addNamespaceRow);
+  document.getElementById("opcua-grid-assign-btn").addEventListener("click", assignGridNodeIds);
+  document.getElementById("opcua-grid-save-btn").addEventListener("click", saveFormatGrid);
+  document.getElementById("opcua-grid-reload-btn").addEventListener("click", async () => {
+    await loadFormatGrid();
+    showMessageOn("opcua", t("opcua.grid.reloaded"));
   });
 
   for (const form of document.querySelectorAll(".custom-form")) {

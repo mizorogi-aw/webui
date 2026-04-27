@@ -1,4 +1,6 @@
+import csv
 import hashlib
+import io
 import ipaddress
 import json
 import os
@@ -48,7 +50,7 @@ ADDRESS_SPACE_DEFINITION_FILENAME = "address-space-definition.csv"
 OPCUA_INSTALL_ROOT = Path("/opt/ua_server_sample")
 OPCUA_SERVER_BIN = OPCUA_INSTALL_ROOT / "bin" / "ua_server_sample"
 OPCUA_CLIENT_CERT_DIR = OPCUA_INSTALL_ROOT / "client_certs"
-OPCUA_FORMAT_FILE = OPCUA_INSTALL_ROOT / "format.csv"
+OPCUA_FORMAT_FILE = OPCUA_INSTALL_ROOT / "config" / "format.csv"
 OPCUA_CONFIG_FILE = OPCUA_INSTALL_ROOT / "config" / "config.csv"
 OPCUA_SERVICE_NAME = "ua_server_sample.service"
 OPCUA_MAX_CLIENT_CERTS = 5
@@ -60,6 +62,55 @@ USERNAME_PATTERN = re.compile(r"^[a-zA-Z0-9_.-]{2,32}$")
 PASSWORD_PATTERN = re.compile(r"^.{3,128}$")
 AUTH_REALM = "Field IoT Gateway Nano"
 FORCE_REAUTH_COOKIE = "force_reauth"
+
+# format.csv column indices
+_FC_NODE_CLASS = 0
+_FC_BROWSE_PATH = 1
+_FC_NODE_ID = 2
+_FC_REFERENCE_TYPE_ID = 3
+_FC_BROWSE_NAME = 4
+_FC_TYPE_DEFINITION_ID = 5
+_FC_HAS_MODELLING_RULE = 6
+_FC_DISPLAY_NAME = 9
+_FC_DESCRIPTION = 10
+_FC_WRITE_MASK = 11
+_FC_OBJECT_EVENT_NOTIFIER = 12
+_FC_DATA_TYPE = 14
+_FC_VALUE_RANK = 15
+_FC_ARRAY_DIMENSIONS_SIZE = 16
+_FC_VALUE = 17
+_FC_ACCESS_LEVEL = 18
+_FC_MIN_SAMPLING_INTERVAL = 19
+_FC_HISTORIZING = 20
+_FC_CYCLIC = 24
+_FC_PARAM1 = 25
+_FC_PARAM2 = 26
+_FC_TOTAL_COLS = 27
+
+_FC_REF_TYPE_DEFAULT = "Type/ReferenceTypes/References/HierarchicalReferences/Organizes"
+_FC_OBJECT_TYPE_DEF = "Type/ObjectTypes/BaseObjectType/FolderType"
+_FC_VARIABLE_TYPE_DEF = "Type/VariableTypes/BaseVariableType/BaseDataVariableType"
+_FC_HAS_MODELLING_RULE_DEFAULT = "Mandatory"
+_FC_NODE_ID_START = 10001
+
+# meta row: namespace label columns start at index 4 (ns=0 → index 4, ns=1 → index 5, ...)
+_FC_NAMESPACE_LABELS_META_START = 4
+_FC_NAMESPACE_MAX = 5
+
+# DataType short name <-> CSV path mapping
+_FC_DATATYPE_SHORT_TO_PATH: dict[str, str] = {
+    "Boolean": "Type/DataTypes/BaseDataType/Boolean",
+    "INT16": "Type/DataTypes/BaseDataType/Number/Integer/Int16",
+    "UINT16": "Type/DataTypes/BaseDataType/Number/UInteger/UInt16",
+    "INT32": "Type/DataTypes/BaseDataType/Number/Integer/Int32",
+    "UINT32": "Type/DataTypes/BaseDataType/Number/UInteger/UInt32",
+    "FLOAT": "Type/DataTypes/BaseDataType/Number/Float",
+    "INT64": "Type/DataTypes/BaseDataType/Number/Integer/Int64",
+    "UINT64": "Type/DataTypes/BaseDataType/Number/UInteger/UInt64",
+    "DOUBLE": "Type/DataTypes/BaseDataType/Number/Double",
+    "String": "Type/DataTypes/BaseDataType/String",
+}
+_FC_DATATYPE_PATH_TO_SHORT: dict[str, str] = {v: k for k, v in _FC_DATATYPE_SHORT_TO_PATH.items()}
 DEFAULT_PASSWORD_HASH = (
     "scrypt:32768:8:1$DtR8LXlWQETIJPNU$43aed9e52d15c8339bd450ff202e593c2f16899f"
     "ba1b91959dc6fe457ab4cdff9fda5f935ca9cc1f74ce988f2808b0fef4a9ba48f5dac5c826"
@@ -336,6 +387,299 @@ def ensure_opcua_installed() -> tuple[bool, str]:
     if not OPCUA_SERVER_BIN.is_file():
         return False, f"OPCUA server is not installed: {str(OPCUA_SERVER_BIN)}"
     return True, ""
+
+
+# ---------------------------------------------------------------------------
+# format.csv grid helpers
+# ---------------------------------------------------------------------------
+
+def _pad_csv_row(row: list[str], length: int = _FC_TOTAL_COLS) -> list[str]:
+    if len(row) < length:
+        return row + [""] * (length - len(row))
+    return list(row[:length])
+
+
+def parse_format_csv(text: str) -> dict:
+    """Parse format.csv text into meta lines, header row, and data rows.
+
+    Also extracts namespace labels from the meta row (positions 4+).
+    """
+    reader = csv.reader(io.StringIO(text))
+    all_rows = list(reader)
+    # Skip trailing empty rows
+    while all_rows and all(c.strip() == "" for c in all_rows[-1]):
+        all_rows.pop()
+    if len(all_rows) < 2:
+        raise ValueError("format.csv must have at least 2 rows (meta + header)")
+    meta_lines = [all_rows[0]]
+    header_row = all_rows[1]
+    data_rows = [_pad_csv_row(r) for r in all_rows[2:] if any(c.strip() for c in r)]
+    # Extract namespace labels from meta row (index 4 onwards)
+    meta_row = all_rows[0]
+    ns_labels = []
+    for i in range(_FC_NAMESPACE_LABELS_META_START, _FC_NAMESPACE_LABELS_META_START + _FC_NAMESPACE_MAX):
+        label = meta_row[i].strip() if i < len(meta_row) else ""
+        ns_labels.append(label)
+    # Trim trailing empty labels
+    while ns_labels and not ns_labels[-1]:
+        ns_labels.pop()
+    return {"meta": meta_lines, "header": header_row, "data": data_rows, "ns_labels": ns_labels}
+
+
+def format_csv_serialize(parsed: dict) -> str:
+    """Serialize parsed format.csv back to CSV text, writing ns_labels into meta row."""
+    buf = io.StringIO()
+    writer = csv.writer(buf, lineterminator="\n", quoting=csv.QUOTE_MINIMAL)
+    # Rebuild meta row with updated ns_labels
+    meta_row = list(parsed["meta"][0]) if parsed["meta"] else []
+    ns_labels: list[str] = parsed.get("ns_labels", [])
+    # Ensure meta row is long enough
+    needed = _FC_NAMESPACE_LABELS_META_START + _FC_NAMESPACE_MAX
+    while len(meta_row) < needed:
+        meta_row.append("")
+    # Write ns labels at positions 4+
+    for i, label in enumerate(ns_labels[:_FC_NAMESPACE_MAX]):
+        meta_row[_FC_NAMESPACE_LABELS_META_START + i] = label
+    # Clear any leftover labels beyond current list
+    for i in range(len(ns_labels), _FC_NAMESPACE_MAX):
+        meta_row[_FC_NAMESPACE_LABELS_META_START + i] = ""
+    writer.writerow(meta_row)
+    writer.writerow(parsed["header"])
+    for row in parsed["data"]:
+        writer.writerow(row)
+    return buf.getvalue()
+
+
+def _split_node_id(node_id: str) -> tuple[str, str]:
+    """Split 'ns=X;i=N' into ('X', 'N').  Returns ('0', '') for empty or non-matching."""
+    if not node_id:
+        return ("0", "")
+    m = re.fullmatch(r"ns=(\d+);i=(\d+)", node_id.strip())
+    if m:
+        return (m.group(1), m.group(2))
+    return ("0", node_id.strip())
+
+
+def _normalize_access_level_for_ui(raw_access: str) -> str:
+    """CSV access level (1-7) → UI base value (1-3). Strips the HistoryRead bit (4)."""
+    try:
+        val = int(str(raw_access or "").strip())
+    except ValueError:
+        return ""
+    base = val & 0x03
+    return str(base) if base in (1, 2, 3) else ""
+
+
+def _compose_access_level_for_csv(ui_access: str, historizing: str) -> str:
+    """UI base access (1-3) + Historizing flag → CSV access level (1-7)."""
+    try:
+        base = int(str(ui_access or "").strip()) & 0x03
+    except ValueError:
+        return ""
+    if base not in (1, 2, 3):
+        return ""
+    if str(historizing or "").strip() == "1":
+        base |= 0x04
+    return str(base)
+
+
+def format_csv_to_dto(parsed: dict) -> list[dict]:
+    """Convert parsed format.csv data rows to grid DTOs (editable columns only)."""
+    rows = []
+    for i, row in enumerate(parsed["data"]):
+        ns_idx, id_num = _split_node_id(row[_FC_NODE_ID])
+        rows.append({
+            "_row": i,
+            "NodeClass": row[_FC_NODE_CLASS],
+            "BrowsePath": row[_FC_BROWSE_PATH],
+            "NamespaceIndex": ns_idx,
+            "NodeIdNumber": id_num,
+            "BrowseName": row[_FC_BROWSE_NAME],
+            "DataType": _FC_DATATYPE_PATH_TO_SHORT.get(row[_FC_DATA_TYPE], row[_FC_DATA_TYPE]),
+            "Access": _normalize_access_level_for_ui(row[_FC_ACCESS_LEVEL]),
+            "Historizing": row[_FC_HISTORIZING],
+            "EventNotifier": row[_FC_OBJECT_EVENT_NOTIFIER],
+            "Cyclic": row[_FC_CYCLIC] if row[_FC_CYCLIC].strip() else "1000",
+            "Param1": row[_FC_PARAM1],
+        })
+    return rows
+
+
+def _build_new_csv_row(dto: dict) -> list[str]:
+    """Build a complete CSV row for a brand-new entry with defaults for non-editable fields."""
+    node_class = str(dto.get("NodeClass", "Variable")).strip()
+    browse_path = str(dto.get("BrowsePath", "")).strip()
+    browse_name = str(dto.get("BrowseName", "")).strip()
+    ns_idx = str(dto.get("NamespaceIndex", "0")).strip()
+    id_num = str(dto.get("NodeIdNumber", "")).strip()
+    node_id = f"ns={ns_idx};i={id_num}" if id_num else ""
+    data_type_short = str(dto.get("DataType", "")).strip()
+    data_type = _FC_DATATYPE_SHORT_TO_PATH.get(data_type_short, data_type_short)
+    historizing = str(dto.get("Historizing", "")).strip()
+    access = _compose_access_level_for_csv(str(dto.get("Access", "")).strip(), historizing)
+    event_notifier = str(dto.get("EventNotifier", "0")).strip()
+    param1 = str(dto.get("Param1", "")).strip()
+    cyclic = str(dto.get("Cyclic", "1000")).strip() or "1000"
+
+    row = [""] * _FC_TOTAL_COLS
+    row[_FC_NODE_CLASS] = node_class
+    row[_FC_BROWSE_PATH] = browse_path
+    row[_FC_NODE_ID] = node_id
+    row[_FC_REFERENCE_TYPE_ID] = _FC_REF_TYPE_DEFAULT
+    row[_FC_BROWSE_NAME] = browse_name
+    row[_FC_TYPE_DEFINITION_ID] = _FC_OBJECT_TYPE_DEF if node_class == "Object" else _FC_VARIABLE_TYPE_DEF
+    row[_FC_HAS_MODELLING_RULE] = _FC_HAS_MODELLING_RULE_DEFAULT
+    row[_FC_DISPLAY_NAME] = f"en:{browse_name}" if browse_name else ""
+    row[_FC_DESCRIPTION] = f"en:{browse_name}" if browse_name else ""
+    row[_FC_WRITE_MASK] = "0"
+    if node_class == "Object":
+        row[_FC_OBJECT_EVENT_NOTIFIER] = event_notifier if event_notifier else "0"
+    if node_class == "Variable":
+        row[_FC_VALUE_RANK] = "-1"
+        row[_FC_ARRAY_DIMENSIONS_SIZE] = "0"
+        row[_FC_MIN_SAMPLING_INTERVAL] = "250"
+        row[_FC_CYCLIC] = cyclic
+    row[_FC_DATA_TYPE] = data_type
+    row[_FC_ACCESS_LEVEL] = access
+    row[_FC_HISTORIZING] = historizing
+    row[_FC_PARAM1] = param1 if node_class == "Variable" else ""
+    if node_class == "Variable" and row[_FC_PARAM1] not in ("0", "1"):
+        row[_FC_PARAM1] = "0"
+    row[_FC_PARAM2] = ""
+    return row
+
+
+def dto_to_format_csv_row(dto: dict, existing_row: list[str] | None) -> list[str]:
+    """Merge DTO editable fields into a CSV row, preserving non-editable fields."""
+    if existing_row is None:
+        return _build_new_csv_row(dto)
+
+    row = _pad_csv_row(list(existing_row))
+    old_class = row[_FC_NODE_CLASS]
+    new_class = str(dto.get("NodeClass", old_class)).strip()
+    row[_FC_NODE_CLASS] = new_class
+    row[_FC_BROWSE_PATH] = str(dto.get("BrowsePath", row[_FC_BROWSE_PATH])).strip()
+    ns_idx = str(dto.get("NamespaceIndex", "0")).strip()
+    id_num = str(dto.get("NodeIdNumber", "")).strip()
+    row[_FC_NODE_ID] = f"ns={ns_idx};i={id_num}" if id_num else ""
+    row[_FC_BROWSE_NAME] = str(dto.get("BrowseName", row[_FC_BROWSE_NAME])).strip()
+    data_type_short = str(dto.get("DataType", "")).strip()
+    row[_FC_DATA_TYPE] = _FC_DATATYPE_SHORT_TO_PATH.get(data_type_short, data_type_short)
+    row[_FC_HISTORIZING] = str(dto.get("Historizing", row[_FC_HISTORIZING])).strip()
+    row[_FC_ACCESS_LEVEL] = _compose_access_level_for_csv(
+        str(dto.get("Access", _normalize_access_level_for_ui(row[_FC_ACCESS_LEVEL]))).strip(),
+        row[_FC_HISTORIZING],
+    )
+    if new_class == "Object":
+        row[_FC_OBJECT_EVENT_NOTIFIER] = str(dto.get("EventNotifier", row[_FC_OBJECT_EVENT_NOTIFIER])).strip()
+    if new_class == "Variable":
+        row[_FC_MIN_SAMPLING_INTERVAL] = "250"
+        cyclic_val = str(dto.get("Cyclic", row[_FC_CYCLIC])).strip() or "1000"
+        row[_FC_CYCLIC] = cyclic_val
+    else:
+        row[_FC_CYCLIC] = ""
+    row[_FC_PARAM1] = str(dto.get("Param1", row[_FC_PARAM1])).strip() if new_class == "Variable" else ""
+    row[_FC_PARAM2] = ""
+    if old_class != new_class:
+        row[_FC_TYPE_DEFINITION_ID] = _FC_OBJECT_TYPE_DEF if new_class == "Object" else _FC_VARIABLE_TYPE_DEF
+    return row
+
+
+def validate_format_grid(rows: list[dict]) -> list[dict]:
+    """Validate grid rows. Returns a list of per-row error dicts."""
+    errors: list[dict] = []
+
+    full_path_seen: set[str] = set()
+    node_id_seen: dict[str, int] = {}
+    event_notifier_rows: list[int] = []
+
+    # Build object paths for BrowsePath tree check
+    object_full_paths: set[str] = {"Objects"}
+    for row in rows:
+        node_class = str(row.get("NodeClass", "")).strip()
+        bp = str(row.get("BrowsePath", "")).strip()
+        bn = str(row.get("BrowseName", "")).strip()
+        if node_class == "Object":
+            full = f"{bp}/{bn}" if bp else bn
+            object_full_paths.add(full)
+
+    for i, row in enumerate(rows):
+        node_class = str(row.get("NodeClass", "")).strip()
+        browse_path = str(row.get("BrowsePath", "")).strip()
+        browse_name = str(row.get("BrowseName", "")).strip()
+        ns_idx = str(row.get("NamespaceIndex", "0")).strip()
+        id_num = str(row.get("NodeIdNumber", "")).strip()
+        node_id = f"ns={ns_idx};i={id_num}" if id_num else ""
+
+        if node_class not in ("Object", "Variable"):
+            errors.append({"row": i, "field": "NodeClass", "message": "NodeClass must be Object or Variable"})
+
+        if node_class == "Object" and str(row.get("EventNotifier", "")).strip() == "1":
+            event_notifier_rows.append(i)
+
+        if not browse_name:
+            errors.append({"row": i, "field": "BrowseName", "message": "BrowseName is required"})
+
+        if node_class == "Variable":
+            param1_val = str(row.get("Param1", "")).strip()
+            if param1_val not in ("", "0", "1"):
+                errors.append({"row": i, "field": "Param1",
+                                "message": f"Param1 must be '0' or '1' for Variable rows, got '{param1_val}'"})
+
+            cyclic_val = str(row.get("Cyclic", "1000")).strip() or "1000"
+            try:
+                cyclic_int = int(cyclic_val)
+                if not (250 <= cyclic_int <= 300000):
+                    errors.append({"row": i, "field": "Cyclic",
+                                   "message": f"Cyclic must be between 250 and 300000, got {cyclic_int}"})
+            except ValueError:
+                errors.append({"row": i, "field": "Cyclic",
+                               "message": f"Cyclic must be an integer, got '{cyclic_val}'"})
+        full_path = f"{browse_path}/{browse_name}" if browse_path else browse_name
+        if full_path in full_path_seen:
+            errors.append({"row": i, "field": "BrowseName", "message": f"Duplicate BrowsePath+BrowseName: {full_path}"})
+        else:
+            full_path_seen.add(full_path)
+
+        if browse_path and browse_path not in object_full_paths:
+            errors.append({"row": i, "field": "BrowsePath", "message": f"Parent path not found: {browse_path}"})
+
+        if node_id:
+            if node_id in node_id_seen:
+                errors.append({"row": i, "field": "NodeIdNumber", "message": f"Duplicate NodeId: {node_id}"})
+            else:
+                node_id_seen[node_id] = i
+
+    if len(event_notifier_rows) == 0:
+        errors.append({"row": 0, "field": "EventNotifier", "message": "One Object row must have EventNotifier=1"})
+    elif len(event_notifier_rows) > 1:
+        for row_idx in event_notifier_rows:
+            errors.append({"row": row_idx, "field": "EventNotifier", "message": "Only one Object row can have EventNotifier=1"})
+
+    return errors
+
+
+def assign_format_grid_node_ids(rows: list[dict]) -> list[dict]:
+    """Assign NodeIds (NamespaceIndex=0, NodeIdNumber=N) to rows that have an empty NodeIdNumber."""
+    existing_ids: set[int] = set()
+    for row in rows:
+        id_num = str(row.get("NodeIdNumber", "")).strip()
+        if id_num and id_num.isdigit():
+            existing_ids.add(int(id_num))
+
+    next_id = _FC_NODE_ID_START
+    updated = []
+    for row in rows:
+        r = dict(row)
+        if not str(r.get("NodeIdNumber", "")).strip():
+            while next_id in existing_ids:
+                next_id += 1
+            r["NamespaceIndex"] = r.get("NamespaceIndex", "0") or "0"
+            r["NodeIdNumber"] = str(next_id)
+            existing_ids.add(next_id)
+            next_id += 1
+        updated.append(r)
+    return updated
 
 
 def ensure_opcua_mutable_paths() -> tuple[bool, str]:
@@ -1825,10 +2169,8 @@ def upload_opcua_format_file():
     if not file or not file.filename:
         return jsonify({"error": "empty file"}), 400
 
-    try:
-        validate_address_space_filename(file.filename)
-    except ValueError as error:
-        return jsonify({"error": str(error)}), 400
+    if Path(file.filename).suffix.lower() != ".csv":
+        return jsonify({"error": "file extension must be .csv"}), 400
 
     if OPCUA_FORMAT_FILE.exists():
         overwrite = str(request.form.get("overwrite", "")).strip().lower() in {
@@ -1849,6 +2191,7 @@ def upload_opcua_format_file():
             )
 
     try:
+        OPCUA_FORMAT_FILE.parent.mkdir(parents=True, exist_ok=True)
         file.save(OPCUA_FORMAT_FILE)
     except PermissionError:
         return jsonify({"error": f"permission denied for path: {str(OPCUA_FORMAT_FILE)}"}), 500
@@ -1897,6 +2240,125 @@ def control_opcua_service():
             "service": get_opcua_service_status(),
         }
     )
+
+
+@app.get("/api/opcua/format-grid")
+@auth_required
+def get_opcua_format_grid():
+    ok, message = ensure_opcua_installed()
+    if not ok:
+        return jsonify({"error": message}), 404
+
+    if not OPCUA_FORMAT_FILE.is_file():
+        return jsonify({"error": "format.csv not found"}), 404
+
+    try:
+        text = OPCUA_FORMAT_FILE.read_text(encoding="utf-8")
+        parsed = parse_format_csv(text)
+        rows = format_csv_to_dto(parsed)
+    except (ValueError, IndexError) as error:
+        return jsonify({"error": f"failed to parse format.csv: {error}"}), 500
+
+    return jsonify({"rows": rows, "ns_labels": parsed.get("ns_labels", [])})
+
+
+def _parse_format_grid_payload(payload: dict) -> tuple[list, list[str]]:
+    if not isinstance(payload, dict) or "rows" not in payload:
+        raise ValueError("rows field is required")
+
+    rows = payload["rows"]
+    if not isinstance(rows, list):
+        raise TypeError("rows must be a list")
+
+    ns_labels_raw = payload.get("ns_labels", [])
+    if not isinstance(ns_labels_raw, list):
+        raise TypeError("ns_labels must be a list")
+
+    ns_labels = [str(lbl).strip() for lbl in ns_labels_raw[:_FC_NAMESPACE_MAX]]
+    return rows, ns_labels
+
+
+@app.post("/api/opcua/format-grid/validate")
+@auth_required
+def validate_opcua_format_grid():
+    payload = request.get_json(force=True)
+    try:
+        rows, _ns_labels = _parse_format_grid_payload(payload)
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    except TypeError as error:
+        return jsonify({"error": str(error)}), 400
+
+    errors = validate_format_grid(rows)
+    return jsonify({"ok": len(errors) == 0, "errors": errors})
+
+
+@app.put("/api/opcua/format-grid")
+@auth_required
+def save_opcua_format_grid():
+    allowed, response = require_root()
+    if not allowed:
+        return response
+
+    ok, message = ensure_opcua_mutable_paths()
+    if not ok:
+        return jsonify({"error": message}), get_opcua_error_status(message)
+
+    if not OPCUA_FORMAT_FILE.is_file():
+        return jsonify({"error": "format.csv not found"}), 404
+
+    payload = request.get_json(force=True)
+    try:
+        rows, ns_labels = _parse_format_grid_payload(payload)
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+    except TypeError as error:
+        return jsonify({"error": str(error)}), 400
+
+    errors = validate_format_grid(rows)
+    if errors:
+        return jsonify({"error": "validation failed", "errors": errors}), 422
+
+    try:
+        text = OPCUA_FORMAT_FILE.read_text(encoding="utf-8")
+        parsed = parse_format_csv(text)
+    except (ValueError, IndexError) as error:
+        return jsonify({"error": f"failed to parse format.csv: {error}"}), 500
+
+    new_data = []
+    for dto in rows:
+        row_idx = dto.get("_row", -1)
+        existing_row = (
+            parsed["data"][row_idx]
+            if isinstance(row_idx, int) and 0 <= row_idx < len(parsed["data"])
+            else None
+        )
+        new_data.append(dto_to_format_csv_row(dto, existing_row))
+    parsed["data"] = new_data
+    parsed["ns_labels"] = ns_labels
+    new_text = format_csv_serialize(parsed)
+
+    try:
+        OPCUA_FORMAT_FILE.write_text(new_text, encoding="utf-8")
+    except PermissionError:
+        return jsonify({"error": f"permission denied for path: {str(OPCUA_FORMAT_FILE)}"}), 500
+
+    return jsonify({"ok": True, "row_count": len(new_data)})
+
+
+@app.post("/api/opcua/format-grid/assign-node-ids")
+@auth_required
+def opcua_assign_node_ids():
+    payload = request.get_json(force=True)
+    if not isinstance(payload, dict) or "rows" not in payload:
+        return jsonify({"error": "rows field is required"}), 400
+
+    rows = payload["rows"]
+    if not isinstance(rows, list):
+        return jsonify({"error": "rows must be a list"}), 400
+
+    updated = assign_format_grid_node_ids(rows)
+    return jsonify({"rows": updated})
 
 
 if __name__ == "__main__":

@@ -34,6 +34,12 @@ body.logout-page {
   background: #fafcf7;
 }
 
+/* Grid editor panel: slightly highlighted border to distinguish from file upload card */
+.upload-card.grid-editor-panel {
+  border-color: #a8c5a0;
+  background: #f4f8f0;
+}
+
 #address-space-file-status {
   margin-bottom: 0;
 }
@@ -488,4 +494,300 @@ body.ui-locked .container {
     flex-direction: column;
     align-items: stretch;
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* Format Grid Editor                                                   */
+/* ------------------------------------------------------------------ */
+
+.format-grid-wrap {
+  overflow: auto;
+  max-height: 480px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin: 10px 0;
+}
+
+.format-grid {
+  border-collapse: collapse;
+  width: max-content;
+  min-width: 100%;
+  font-size: 0.85rem;
+}
+
+.format-grid thead tr {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #eef2e8;
+}
+
+.format-grid th,
+.format-grid td {
+  padding: 5px 7px;
+  border: 1px solid var(--line);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
+.format-grid th {
+  font-weight: 600;
+  color: var(--ink);
+  text-align: left;
+}
+
+.format-grid tbody tr:nth-child(even) {
+  background: #f6f8f3;
+}
+
+.format-grid tbody tr:hover {
+  background: #edf5e8;
+}
+
+/* ---- Sticky columns: NodeClass / BrowsePath / BrowseName ---- */
+/* Column widths are fixed so left offsets stay consistent       */
+.format-grid th:nth-child(1),
+.format-grid td:nth-child(1) {
+  position: sticky;
+  left: 0;
+  width: 100px;
+  min-width: 100px;
+  max-width: 100px;
+}
+
+.format-grid th:nth-child(2),
+.format-grid td:nth-child(2) {
+  position: sticky;
+  left: 100px;
+  width: 170px;
+  min-width: 170px;
+  max-width: 170px;
+}
+
+.format-grid th:nth-child(3),
+.format-grid td:nth-child(3) {
+  position: sticky;
+  left: 270px;
+  width: 150px;
+  min-width: 150px;
+  max-width: 150px;
+  /* visual right-edge separator */
+  box-shadow: 2px 0 5px -1px rgba(0, 0, 0, 0.18);
+}
+
+/* Header corner cells sit above both row-sticky and col-sticky */
+.format-grid thead th:nth-child(1),
+.format-grid thead th:nth-child(2),
+.format-grid thead th:nth-child(3) {
+  z-index: 3;
+  background: #eef2e8;
+}
+
+/* Body sticky cells need an opaque background to mask scrolled content */
+.format-grid tbody td:nth-child(1),
+.format-grid tbody td:nth-child(2),
+.format-grid tbody td:nth-child(3) {
+  z-index: 1;
+  background: #fff;
+}
+
+.format-grid tbody tr:nth-child(even) td:nth-child(1),
+.format-grid tbody tr:nth-child(even) td:nth-child(2),
+.format-grid tbody tr:nth-child(even) td:nth-child(3) {
+  background: #f6f8f3;
+}
+
+.format-grid tbody tr:hover td:nth-child(1),
+.format-grid tbody tr:hover td:nth-child(2),
+.format-grid tbody tr:hover td:nth-child(3) {
+  background: #edf5e8;
+}
+
+.format-grid tbody tr.grid-row-error td:nth-child(1),
+.format-grid tbody tr.grid-row-error td:nth-child(2),
+.format-grid tbody tr.grid-row-error td:nth-child(3) {
+  background: #fff2f0;
+}
+
+.format-grid input[type="text"],
+.format-grid select {
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 3px 5px;
+  font-size: 0.82rem;
+  background: #fff;
+  color: var(--ink);
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.format-grid input[type="text"] {
+  min-width: 110px;
+}
+
+.format-grid .grid-browse-path,
+.format-grid .grid-browse-name {
+  min-width: unset;
+  width: 100%;
+}
+
+.format-grid .grid-node-id {
+  min-width: 100px;
+}
+
+.format-grid .grid-data-type {
+  min-width: 120px;
+}
+
+
+.format-grid .grid-nodeid-cell {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+  min-width: 200px;
+}
+
+.format-grid .grid-nodeid-cell .grid-ns-index {
+  min-width: 90px;
+  flex: 0 0 auto;
+}
+
+.format-grid .grid-nodeid-cell .grid-node-id-num {
+  min-width: 80px;
+  flex: 1 1 auto;
+}
+
+/* Standalone namespace select (separate column) */
+.format-grid td .grid-ns-index {
+  min-width: 110px;
+  max-width: 180px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* Standalone NodeId number input (separate column) */
+.format-grid td .grid-node-id-num {
+  min-width: 80px;
+  max-width: 120px;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* Cyclic interval input (Variable only) */
+.format-grid input[type="number"].grid-cyclic {
+  min-width: 70px;
+  max-width: 100px;
+  width: 100%;
+  box-sizing: border-box;
+  text-align: right;
+}
+
+.format-grid .grid-action-cell {
+  white-space: nowrap;
+}
+
+.format-grid .grid-ins-btn {
+  padding: 3px 8px;
+  font-size: 0.78rem;
+  margin-right: 4px;
+}
+
+/* NameSpace editor */
+.ns-editor-section {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  background: #f4f7f0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.ns-editor-section h4 {
+  margin: 0 0 4px;
+  font-size: 0.9rem;
+  color: var(--ink);
+}
+
+.ns-editor-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.ns-index-badge {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: #fff;
+  background: var(--accent);
+  border-radius: 4px;
+  padding: 2px 7px;
+  min-width: 42px;
+  text-align: center;
+  flex: 0 0 auto;
+}
+
+.ns-label-input {
+  flex: 1 1 auto;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 4px 7px;
+  font-size: 0.85rem;
+  min-width: 120px;
+}
+
+.ns-ins-btn,
+.ns-del-btn {
+  flex: 0 0 auto;
+  padding: 3px 8px;
+  font-size: 0.78rem;
+}
+.format-grid input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+}
+
+.format-grid input:disabled,
+.format-grid select:disabled {
+  background: #e8ede3;
+  color: #999;
+  cursor: not-allowed;
+}
+
+.format-grid .grid-del-btn {
+  padding: 3px 8px;
+  font-size: 0.78rem;
+}
+
+tr.grid-row-error {
+  background: #fff2f0 !important;
+}
+
+tr.grid-row-error td {
+  border-color: #f5a09a;
+}
+
+.grid-cell-error {
+  outline: 2px solid #e53935;
+  border-radius: 4px;
+}
+
+.grid-validation-status {
+  min-height: 1.2em;
+  margin: 6px 0 0;
+  font-weight: 600;
+}
+
+.grid-validation-status.is-error {
+  color: #b30000;
+}
+
+.grid-validation-status.is-ok {
+  color: #2f5d50;
+}
+
+.grid-toolbar {
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 6px;
 }

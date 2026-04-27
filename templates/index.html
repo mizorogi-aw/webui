@@ -178,20 +178,6 @@
         </div>
 
         <div class="upload-card">
-          <form id="opcua-format-form" enctype="multipart/form-data">
-            <label data-i18n="opcua.address_space_label">Upload Address Space Definition File</label>
-            <input id="opcua_format_file" name="file" type="file" accept=".csv" required />
-            <p class="custom-help" data-i18n="opcua.address_space_help">Upload a new format.csv to replace the current file used by OPCUA Server.</p>
-            <div class="action-row">
-              <button id="opcua-format-upload-btn" type="button" class="action" data-i18n="actions.upload">Upload</button>
-              <button id="opcua-format-download-btn" type="button" class="action" disabled data-i18n="actions.download_current">Download Current</button>
-            </div>
-          </form>
-
-          <p id="opcua-format-status" class="custom-help" data-i18n="opcua.address_space_missing">format.csv not found</p>
-        </div>
-
-        <div class="upload-card">
           <form id="opcua-cert-form" enctype="multipart/form-data">
             <label data-i18n="opcua.client_allowlist">Upload Client Allowlist (Client Certificates)</label>
             <input id="opcua_cert_file" name="file" type="file" accept=".der" required />
@@ -204,6 +190,63 @@
 
           <h3 data-i18n="opcua.installed_client_certs">Installed Client Certificates</h3>
           <ul id="opcua-cert-list"></ul>
+        </div>
+
+        <div class="upload-card">
+          <form id="opcua-format-form" enctype="multipart/form-data">
+            <label data-i18n="opcua.address_space_label">Upload Address Space Definition File</label>
+            <input id="opcua_format_file" name="file" type="file" accept=".csv" required />
+            <p class="custom-help" data-i18n="opcua.address_space_help">Upload a new format.csv to replace the current file used by OPCUA Server.</p>
+            <div class="action-row">
+              <button id="opcua-format-upload-btn" type="button" class="action" data-i18n="actions.upload">Upload</button>
+              <button id="opcua-format-download-btn" type="button" class="action" disabled data-i18n="actions.download_current">Download Current</button>
+              <button id="opcua-grid-toggle-btn" type="button" class="action" style="display:none" data-i18n="opcua.grid.edit_open">Edit Address Space</button>
+            </div>
+          </form>
+
+          <p id="opcua-format-status" class="custom-help" data-i18n="opcua.address_space_missing">format.csv not found</p>
+        </div>
+
+        <div class="upload-card grid-editor-panel" id="opcua-grid-card" style="display:none">
+          <h3 data-i18n="opcua.grid.heading">Address Space Grid Editor</h3>
+          <p class="custom-help" data-i18n="opcua.grid.help">Edit the address space definition directly. Save writes back to format.csv.</p>
+            <div class="ns-editor-section">
+              <h4 data-i18n="opcua.grid.ns_heading">NameSpace Definition</h4>
+              <p class="custom-help" data-i18n="opcua.grid.ns_help">Define NameSpace labels (max 5). Stored in format.csv row 1.</p>
+              <div id="opcua-ns-editor-rows"></div>
+              <div class="action-row">
+                <button id="opcua-ns-add-btn" type="button" class="action" data-i18n="opcua.grid.ns_add">Add NameSpace</button>
+              </div>
+            </div>
+            <div class="action-row grid-toolbar">
+              <button id="opcua-grid-add-btn" type="button" class="action" data-i18n="opcua.grid.add_row">Add Row</button>
+            <button id="opcua-grid-assign-btn" type="button" class="action" data-i18n="opcua.grid.assign_node_ids">Assign NodeIds</button>
+            <button id="opcua-grid-save-btn" type="button" class="action" data-i18n="opcua.grid.save">Save Grid</button>
+            <button id="opcua-grid-reload-btn" type="button" class="action" data-i18n="opcua.grid.reload">Reload</button>
+          </div>
+          <div class="format-grid-wrap">
+            <table id="opcua-format-grid" class="format-grid">
+              <thead>
+                <tr>
+                  <th data-i18n="opcua.grid.col.node_class">NodeClass</th>
+                  <th data-i18n="opcua.grid.col.browse_path">BrowsePath</th>
+                  <th data-i18n="opcua.grid.col.browse_name">BrowseName</th>
+                  <th data-i18n="opcua.grid.col.namespace">NameSpace</th>
+                  <th data-i18n="opcua.grid.col.node_id">NodeId</th>
+                  <th data-i18n="opcua.grid.col.data_type">DataType</th>
+                  <th data-i18n="opcua.grid.col.access">Access</th>
+                  <th data-i18n="opcua.grid.col.historizing">Hist.</th>
+                  <th data-i18n="opcua.grid.col.event_notifier">Event</th>
+                  <th data-i18n="opcua.grid.col.param1_target">Event Target</th>
+                  <th data-i18n="opcua.grid.col.cyclic">Cyclic</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody id="opcua-grid-body"></tbody>
+            </table>
+          </div>
+          <p id="opcua-grid-validation-status" class="grid-validation-status"></p>
+          <p id="opcua-grid-row-count" class="custom-help"></p>
         </div>
 
         <p id="message-opcua" class="tab-message"></p>
