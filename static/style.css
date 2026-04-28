@@ -387,6 +387,29 @@ body.theme-dark .ns-label-input {
   border-color: #5a7080;
 }
 
+body.theme-dark .modbus-table thead tr {
+  background: #1a2e3c;
+  color: #b8d4e0;
+}
+
+body.theme-dark .modbus-table tbody tr:nth-child(even) {
+  background: #1e2f3e;
+}
+
+body.theme-dark .modbus-table tbody tr:hover {
+  background: #243846;
+}
+
+body.theme-dark .modbus-table th,
+body.theme-dark .modbus-table td,
+body.theme-dark .modbus-grid-wrap {
+  border-color: #3a5060;
+}
+
+body.theme-dark .modbus-empty-cell {
+  color: #8aa0ae;
+}
+
 .panel {
   display: none;
   margin-top: 16px;
@@ -632,6 +655,59 @@ body.ui-locked .container {
   font-weight: 600;
 }
 
+.modbus-grid-wrap {
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin: 10px 0;
+}
+
+.modbus-table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 760px;
+}
+
+.modbus-table thead tr {
+  background: #eef2e8;
+}
+
+.modbus-table th,
+.modbus-table td {
+  padding: 8px;
+  border: 1px solid var(--line);
+  vertical-align: middle;
+  text-align: left;
+}
+
+.modbus-table tbody tr:nth-child(even) {
+  background: #f6f8f3;
+}
+
+.modbus-table tbody tr:hover {
+  background: #edf5e8;
+}
+
+.modbus-table input,
+.modbus-table select {
+  width: 100%;
+  min-width: 120px;
+}
+
+.modbus-table .action-row {
+  flex-wrap: nowrap;
+}
+
+.modbus-table .action {
+  min-width: 84px;
+}
+
+.modbus-empty-cell {
+  text-align: center;
+  color: #5b6a62;
+  padding: 18px;
+}
+
 @keyframes reveal {
   from {
     opacity: 0;
@@ -683,6 +759,10 @@ body.ui-locked .container {
   .file-item {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .modbus-table {
+    min-width: 640px;
   }
 }
 

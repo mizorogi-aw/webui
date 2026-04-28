@@ -253,6 +253,60 @@
         <p id="message-opcua" class="tab-message"></p>
       </section>
 
+      <section id="panel-modbus" class="panel" role="tabpanel">
+        <div class="upload-card">
+          <h2 data-i18n="modbus.heading">Modbus TCP Master</h2>
+          <p class="custom-help" data-i18n="modbus.help">Configure up to 5 Modbus TCP slaves and map OPCUA Variable nodes to slave addresses. This first step saves a draft in Web UI settings.</p>
+          <div class="action-row">
+            <button id="modbus-add-slave-btn" type="button" class="action" data-i18n="modbus.actions.add_slave">Add</button>
+            <button id="modbus-open-mapping-btn" type="button" class="action secondary" data-i18n="modbus.actions.mapping">Mapping Settings</button>
+            <button id="modbus-save-btn" type="button" class="action" data-i18n="modbus.actions.save">Save Mapping</button>
+          </div>
+        </div>
+
+        <div class="upload-card">
+          <h3 data-i18n="modbus.slaves.heading">Slave Settings</h3>
+          <p class="custom-help" data-i18n="modbus.slaves.help">Define slave name, IP address, port, and register type. Up to 5 entries.</p>
+          <div class="modbus-grid-wrap">
+            <table id="modbus-slave-table" class="modbus-table">
+              <thead>
+                <tr>
+                  <th data-i18n="modbus.col.name">Name</th>
+                  <th data-i18n="modbus.col.ip">IP Address</th>
+                  <th data-i18n="modbus.col.port">Port No.</th>
+                  <th data-i18n="modbus.col.type">Type</th>
+                  <th data-i18n="modbus.col.actions">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="modbus-slave-body"></tbody>
+            </table>
+          </div>
+          <p id="modbus-slave-count" class="custom-help"></p>
+        </div>
+
+        <div id="modbus-mapping-card" class="upload-card" style="display:none">
+          <h3 data-i18n="modbus.mapping.heading">Mapping Settings</h3>
+          <p class="custom-help" data-i18n="modbus.mapping.help">Variable nodes are loaded from OPCUA format.csv. Select a slave and enter address for each row.</p>
+          <div class="modbus-grid-wrap">
+            <table id="modbus-mapping-table" class="modbus-table">
+              <thead>
+                <tr>
+                  <th data-i18n="modbus.col.browse_path">BrowsePath</th>
+                  <th data-i18n="modbus.col.data_type">Type</th>
+                  <th data-i18n="modbus.col.slave_name">SlaveName</th>
+                  <th data-i18n="modbus.col.address">Address</th>
+                  <th data-i18n="modbus.col.actions">Actions</th>
+                </tr>
+              </thead>
+              <tbody id="modbus-mapping-body"></tbody>
+            </table>
+          </div>
+          <p id="modbus-mapping-status" class="custom-help"></p>
+        </div>
+
+        <p id="message-modbus" class="tab-message"></p>
+      </section>
+
       <section id="panel-auth-username" class="panel" role="tabpanel">
         <form id="auth-username-form">
           <h2 data-i18n="auth.heading">Account Settings</h2>

@@ -52,6 +52,58 @@ class ParseFormatCsvTests(unittest.TestCase):
         )
 
 
+class ModbusReadTests(unittest.TestCase):
+    class _FakeSocket:
+        def __init__(self, responses: list[bytes]):
+            self._responses = list(responses)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def settimeout(self, _timeout):
+            return None
+
+        def sendall(self, _data: bytes):
+            return None
+
+        def recv(self, _size: int) -> bytes:
+            if not self._responses:
+                return b""
+            return self._responses.pop(0)
+
+    def test_read_modbus_addr0_to_8_hex_decodes_registers(self):
+        # MBAP(7): TID=1 PID=0 LEN=21 UID=1
+        mbap = bytes([0x00, 0x01, 0x00, 0x00, 0x00, 0x15, 0x01])
+        # PDU(20): FC=03 BC=18 + 9 registers (1..9)
+        pdu = bytes([
+            0x03, 0x12,
+            0x00, 0x01,
+            0x00, 0x02,
+            0x00, 0x03,
+            0x00, 0x04,
+            0x00, 0x05,
+            0x00, 0x06,
+            0x00, 0x07,
+            0x00, 0x08,
+            0x00, 0x09,
+        ])
+
+        fake_socket = self._FakeSocket([mbap, pdu])
+        with patch.object(main.socket, "create_connection", return_value=fake_socket):
+            values = main.read_modbus_addr0_to_8_hex("192.168.100.9", 503, unit_id=1, timeout_seconds=1.0)
+
+        self.assertEqual(
+            values,
+            [
+                "0x0001", "0x0002", "0x0003", "0x0004", "0x0005",
+                "0x0006", "0x0007", "0x0008", "0x0009",
+            ],
+        )
+
+
 class FormatCsvToDtoTests(unittest.TestCase):
     def setUp(self):
         self.parsed = main.parse_format_csv(SAMPLE_CSV)
@@ -431,6 +483,125 @@ class FormatGridApiTests(unittest.TestCase):
             self.assertEqual(response.status_code, 422)
             data = response.get_json()
             self.assertTrue(any(e["field"] == "Param1" for e in data["errors"]))
+
+
+class ModbusSettingsTests(unittest.TestCase):
+    def setUp(self):
+        self.client = main.app.test_client()
+        with self.client.session_transaction() as sess:
+            sess["authenticated"] = True
+
+    def test_parse_modbus_settings_csv_supports_property_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fmt_file = Path(tmp) / "format.csv"
+            fmt_file.write_text(SAMPLE_CSV, encoding="utf-8")
+            csv_text = (
+                "modbus.server.setting1.name,SlaveA\n"
+                "modbus.server.setting1.ip,192.168.0.10\n"
+                "modbus.server.setting1.port,502\n"
+                "modbus.server.setting1.type,holding\n"
+                "modbus.connection.value1.SlaveA,40001,ns=0;i=10002,DOUBLE\n"
+            )
+            with patch.object(main, "OPCUA_FORMAT_FILE", fmt_file):
+                settings = main.parse_modbus_settings_csv(csv_text)
+
+        self.assertEqual(settings["slaves"][0]["name"], "SlaveA")
+        self.assertEqual(settings["slaves"][0]["ip"], "192.168.0.10")
+        self.assertEqual(settings["mappings"][0]["nodeId"], "ns=0;i=10002")
+        self.assertEqual(settings["mappings"][0]["browsePath"], "Objects/Device")
+
+    def test_get_modbus_uses_saved_draft_when_csv_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "config.json"
+            config_path.write_text(
+                '{\n'
+                '  "upload_dir": "/tmp/uploads",\n'
+                '  "custom_pages": {\n'
+                '    "modbus-tcp": {\n'
+                '      "slaves": [{"name": "DraftA", "ip": "10.0.0.1", "port": "502", "type": "holding"}],\n'
+                '      "mappings": []\n'
+                '    }\n'
+                '  },\n'
+                '  "auth": {"enabled": true, "username": "admin", "password_hash": "x"}\n'
+                '}\n',
+                encoding="utf-8",
+            )
+            with (
+                patch.object(main, "MODBUS_TCP_FILE", Path(tmp) / "modbustcp.csv"),
+                patch.object(main, "get_existing_config_path", return_value=config_path),
+            ):
+                response = self.client.get("/api/modbus")
+
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertEqual(data["source"], "draft")
+        self.assertEqual(data["settings"]["slaves"][0]["name"], "DraftA")
+
+    def test_save_modbus_writes_csv_and_prunes_deleted_nodes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fmt_file = Path(tmp) / "format.csv"
+            fmt_file.write_text(SAMPLE_CSV, encoding="utf-8")
+            server_bin = Path(tmp) / "ua_server_sample"
+            server_bin.touch()
+            modbus_file = Path(tmp) / "modbustcp.csv"
+            config_path = Path(tmp) / "config.json"
+            config_path.write_text(
+                '{"upload_dir": "/tmp/uploads", "custom_pages": {}, "auth": {"enabled": true, "username": "admin", "password_hash": "x"}}',
+                encoding="utf-8",
+            )
+            payload = {
+                "slaves": [
+                    {"name": "SlaveA", "ip": "192.168.0.10", "port": "502", "type": "holding"},
+                ],
+                "mappings": [
+                    {"nodeId": "ns=0;i=10002", "browsePath": "Objects/Device", "browseName": "Sensor1", "dataType": "DOUBLE", "slaveName": "SlaveA", "address": "40001"},
+                    {"nodeId": "ns=0;i=99999", "browsePath": "Objects/Device", "browseName": "Stale", "dataType": "DOUBLE", "slaveName": "SlaveA", "address": "40002"},
+                ],
+            }
+            with (
+                patch.object(main, "OPCUA_FORMAT_FILE", fmt_file),
+                patch.object(main, "OPCUA_SERVER_BIN", server_bin),
+                patch.object(main, "MODBUS_TCP_FILE", modbus_file),
+                patch.object(main, "get_existing_config_path", return_value=config_path),
+                patch.object(main, "ensure_opcua_mutable_paths", return_value=(True, "")),
+                patch.object(main, "require_root", return_value=(True, None)),
+                patch.object(main, "save_modbus_draft", return_value=None),
+            ):
+                response = self.client.put("/api/modbus", json=payload)
+
+            self.assertEqual(response.status_code, 200)
+            data = response.get_json()
+            self.assertEqual(len(data["settings"]["mappings"]), 1)
+            written = modbus_file.read_text(encoding="utf-8")
+            self.assertIn("modbus.server.setting1.name,SlaveA", written)
+            self.assertIn("modbus.connection.value1.SlaveA,40001,ns=0;i=10002,DOUBLE", written)
+            self.assertNotIn("99999", written)
+
+    def test_modbus_connection_endpoint_success(self):
+        with patch.object(main, "read_modbus_addr0_to_8_hex", return_value=["0x0001", "0x0002"]):
+            response = self.client.post(
+                "/api/modbus/test-connection",
+                json={"ip": "192.168.100.9", "port": "503", "unit_id": 1, "timeout_ms": 500},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertTrue(data["ok"])
+        self.assertEqual(data["ip"], "192.168.100.9")
+        self.assertEqual(data["port"], 503)
+        self.assertEqual(data["unit_id"], 1)
+        self.assertEqual(data["hex_values"], ["0x0001", "0x0002"])
+
+    def test_modbus_connection_endpoint_failure(self):
+        with patch.object(main, "read_modbus_addr0_to_8_hex", side_effect=OSError("timed out")):
+            response = self.client.post(
+                "/api/modbus/test-connection",
+                json={"ip": "192.168.100.9", "port": "503", "unit_id": 1, "timeout_ms": 500},
+            )
+
+        self.assertEqual(response.status_code, 502)
+        data = response.get_json()
+        self.assertIn("connection/read failed", data["error"])
 
 
 if __name__ == "__main__":

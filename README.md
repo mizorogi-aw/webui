@@ -137,3 +137,35 @@ sudo ./scripts/uninstall.sh
 - If Anonymous Connection behavior seems wrong after Save + Restart, verify both:
   - the value written in `/opt/ua_server_sample/config/config.csv`
   - actual anonymous client login result against `opc.tcp://<device-ip>:<port>`
+
+## Work Memo (2026-04-28)
+
+### Implemented in This Session
+
+- Added new Modbus tab UI with two sections: Slave Setting and Mapping Setting.
+- Added Modbus i18n labels/messages for both Japanese and English.
+- Added Modbus settings APIs:
+  - `GET /api/modbus`
+  - `PUT /api/modbus`
+  - `POST /api/modbus/test-connection`
+- Added `modbustcp.csv` parse/serialize support on backend.
+- Implemented real Modbus TCP connection test from the Connect button.
+- Extended connection test to read FC03 registers ADDR0-8 and return HEX values.
+- Improved frontend result formatting to show address labels:
+  - `ADDR0=0x....` through `ADDR8=0x....`
+- Added/updated tests for Modbus UI/API and Modbus read decode path.
+
+### Test Snapshot
+
+- `python -m unittest tests.test_format_grid tests.test_basic_network`
+- Result: `Ran 47 tests ... OK`
+
+### Next Session TODO
+
+- Improve ADDR0-8 result rendering from one-line message to a dedicated table/pre block in Modbus tab.
+- Add failure-path tests for `read_modbus_addr0_to_8_hex`:
+  - MBAP length mismatch
+  - Function code mismatch
+  - Byte count mismatch
+- Add an E2E test that verifies Connect button UI output format (`ADDRn=0x....`).
+- Consider adding unit-id/start-address/register-count inputs in UI for diagnostic flexibility.

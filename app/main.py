@@ -52,6 +52,7 @@ OPCUA_SERVER_BIN = OPCUA_INSTALL_ROOT / "bin" / "ua_server_sample"
 OPCUA_CLIENT_CERT_DIR = OPCUA_INSTALL_ROOT / "client_certs"
 OPCUA_FORMAT_FILE = OPCUA_INSTALL_ROOT / "config" / "format.csv"
 OPCUA_CONFIG_FILE = OPCUA_INSTALL_ROOT / "config" / "config.csv"
+MODBUS_TCP_FILE = OPCUA_INSTALL_ROOT / "config" / "modbustcp.csv"
 OPCUA_SERVICE_NAME = "ua_server_sample.service"
 OPCUA_MAX_CLIENT_CERTS = 5
 OPCUA_MAX_USERS = 5
@@ -62,6 +63,9 @@ USERNAME_PATTERN = re.compile(r"^[a-zA-Z0-9_.-]{2,32}$")
 PASSWORD_PATTERN = re.compile(r"^.{3,128}$")
 AUTH_REALM = "Field IoT Gateway Nano"
 FORCE_REAUTH_COOKIE = "force_reauth"
+MODBUS_CUSTOM_PAGE_ID = "modbus-tcp"
+MODBUS_MAX_SLAVES = 5
+MODBUS_ALLOWED_TYPES = {"holding"}
 
 # format.csv column indices
 _FC_NODE_CLASS = 0
@@ -758,6 +762,297 @@ def parse_config_csv_entry(raw_line: str) -> tuple[str, str] | None:
         return None
     key, value = raw_line.split(",", 1)
     return key.strip(), value.strip()
+
+
+def empty_modbus_settings() -> dict:
+    return {"slaves": [], "mappings": []}
+
+
+def get_saved_modbus_draft() -> dict:
+    config = load_app_config()
+    custom_pages = config.get("custom_pages", {})
+    draft = custom_pages.get(MODBUS_CUSTOM_PAGE_ID, {})
+    return draft if isinstance(draft, dict) else {}
+
+
+def save_modbus_draft(settings: dict) -> None:
+    config = load_app_config()
+    custom_pages = config.setdefault("custom_pages", {})
+    custom_pages[MODBUS_CUSTOM_PAGE_ID] = settings
+    save_app_config(config)
+
+
+def _normalize_modbus_slave(raw: dict) -> dict:
+    return {
+        "name": str(raw.get("name", "")).strip(),
+        "ip": str(raw.get("ip", "")).strip(),
+        "port": str(raw.get("port", "502")).strip(),
+        "type": str(raw.get("type", "holding")).strip() or "holding",
+    }
+
+
+def _normalize_modbus_mapping(raw: dict) -> dict:
+    return {
+        "nodeId": str(raw.get("nodeId", "")).strip(),
+        "browsePath": str(raw.get("browsePath", "")).strip(),
+        "browseName": str(raw.get("browseName", "")).strip(),
+        "dataType": str(raw.get("dataType", "")).strip(),
+        "slaveName": str(raw.get("slaveName", "")).strip(),
+        "address": str(raw.get("address", "")).strip(),
+    }
+
+
+def _load_opcua_variable_lookup() -> dict[str, dict]:
+    if not OPCUA_FORMAT_FILE.is_file():
+        return {}
+
+    try:
+        parsed = parse_format_csv(OPCUA_FORMAT_FILE.read_text(encoding="utf-8"))
+        rows = format_csv_to_dto(parsed)
+    except (OSError, ValueError, IndexError):
+        return {}
+
+    lookup: dict[str, dict] = {}
+    for row in rows:
+        if str(row.get("NodeClass", "")).strip() != "Variable":
+            continue
+        ns_index = str(row.get("NamespaceIndex", "0")).strip() or "0"
+        node_id_number = str(row.get("NodeIdNumber", "")).strip()
+        if not node_id_number:
+            continue
+        node_id = f"ns={ns_index};i={node_id_number}"
+        lookup[node_id] = {
+            "nodeId": node_id,
+            "browsePath": str(row.get("BrowsePath", "")).strip(),
+            "browseName": str(row.get("BrowseName", "")).strip(),
+            "dataType": str(row.get("DataType", "")).strip(),
+        }
+    return lookup
+
+
+def normalize_modbus_settings(payload: dict | None) -> dict:
+    source = payload if isinstance(payload, dict) else {}
+    slaves = [_normalize_modbus_slave(item) for item in source.get("slaves", []) if isinstance(item, dict)]
+    mappings = [_normalize_modbus_mapping(item) for item in source.get("mappings", []) if isinstance(item, dict)]
+    return {"slaves": slaves[:MODBUS_MAX_SLAVES], "mappings": mappings}
+
+
+def prune_modbus_settings(settings: dict) -> dict:
+    normalized = normalize_modbus_settings(settings)
+    slaves = normalized["slaves"]
+    slave_names = {slave["name"].casefold() for slave in slaves if slave["name"]}
+    opcua_lookup = _load_opcua_variable_lookup()
+    mappings = []
+    for mapping in normalized["mappings"]:
+        if not mapping["slaveName"] or mapping["slaveName"].casefold() not in slave_names:
+            continue
+        if not mapping["address"]:
+            continue
+        current_node = opcua_lookup.get(mapping["nodeId"])
+        if opcua_lookup and current_node is None:
+            continue
+        merged = dict(mapping)
+        if current_node:
+            merged["browsePath"] = current_node["browsePath"]
+            merged["browseName"] = current_node["browseName"]
+            merged["dataType"] = current_node["dataType"]
+        mappings.append(merged)
+    return {"slaves": slaves, "mappings": mappings}
+
+
+def validate_modbus_settings(payload: dict) -> dict:
+    if not isinstance(payload, dict):
+        raise TypeError("settings payload must be a JSON object")
+
+    raw_slaves = payload.get("slaves", [])
+    raw_mappings = payload.get("mappings", [])
+    if not isinstance(raw_slaves, list):
+        raise TypeError("slaves must be a list")
+    if not isinstance(raw_mappings, list):
+        raise TypeError("mappings must be a list")
+
+    settings = normalize_modbus_settings(payload)
+    slaves = settings["slaves"]
+    mappings = settings["mappings"]
+
+    if len(slaves) > MODBUS_MAX_SLAVES:
+        raise ValueError(f"maximum slaves is {MODBUS_MAX_SLAVES}")
+
+    seen_names: set[str] = set()
+    for slave in slaves:
+        if not slave["name"]:
+            raise ValueError("slave name is required")
+        normalized_name = slave["name"].casefold()
+        if normalized_name in seen_names:
+            raise ValueError("slave names must be unique")
+        seen_names.add(normalized_name)
+        try:
+            ipaddress.IPv4Address(slave["ip"])
+        except ipaddress.AddressValueError as error:
+            raise ValueError(f"invalid IP address for slave {slave['name']}: {error}") from error
+        try:
+            port = int(slave["port"])
+        except ValueError as error:
+            raise ValueError("port must be between 1 and 65535") from error
+        if port < 1 or port > 65535:
+            raise ValueError("port must be between 1 and 65535")
+        if slave["type"] not in MODBUS_ALLOWED_TYPES:
+            raise ValueError(f"unsupported slave type: {slave['type']}")
+
+    for mapping in mappings:
+        if not mapping["slaveName"] or not mapping["address"]:
+            raise ValueError("mapping requires both slaveName and address")
+        if mapping["slaveName"].casefold() not in seen_names:
+            raise ValueError(f"mapping references unknown slave: {mapping['slaveName']}")
+
+    return prune_modbus_settings(settings)
+
+
+def test_modbus_tcp_connection(host: str, port: int, timeout_seconds: float = 1.5) -> tuple[bool, str]:
+    try:
+        with socket.create_connection((host, port), timeout=timeout_seconds):
+            return True, ""
+    except OSError as error:
+        return False, str(error)
+
+
+def _recv_exact(sock: socket.socket, size: int) -> bytes:
+    chunks: list[bytes] = []
+    remaining = size
+    while remaining > 0:
+        chunk = sock.recv(remaining)
+        if not chunk:
+            raise OSError("connection closed by peer")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
+def read_modbus_addr0_to_8_hex(host: str, port: int, unit_id: int = 1, timeout_seconds: float = 1.5) -> list[str]:
+    if unit_id < 0 or unit_id > 255:
+        raise ValueError("unit_id must be between 0 and 255")
+
+    transaction_id = 1
+    start_addr = 0
+    quantity = 9
+    function_code = 0x03
+
+    request = (
+        transaction_id.to_bytes(2, "big")
+        + (0).to_bytes(2, "big")
+        + (6).to_bytes(2, "big")
+        + bytes([unit_id, function_code])
+        + start_addr.to_bytes(2, "big")
+        + quantity.to_bytes(2, "big")
+    )
+
+    with socket.create_connection((host, port), timeout=timeout_seconds) as sock:
+        sock.settimeout(timeout_seconds)
+        sock.sendall(request)
+
+        mbap = _recv_exact(sock, 7)
+        protocol_id = int.from_bytes(mbap[2:4], "big")
+        length_field = int.from_bytes(mbap[4:6], "big")
+        if protocol_id != 0:
+            raise OSError(f"invalid protocol id: {protocol_id}")
+        if length_field < 2:
+            raise OSError(f"invalid MBAP length: {length_field}")
+
+        pdu = _recv_exact(sock, length_field - 1)
+        if len(pdu) < 2:
+            raise OSError("invalid Modbus response length")
+
+        response_fc = pdu[0]
+        if response_fc == (function_code | 0x80):
+            exception_code = pdu[1]
+            raise OSError(f"modbus exception code: 0x{exception_code:02X}")
+        if response_fc != function_code:
+            raise OSError(f"unexpected function code: 0x{response_fc:02X}")
+
+        byte_count = pdu[1]
+        data = pdu[2:]
+        expected_bytes = quantity * 2
+        if byte_count != expected_bytes or len(data) < expected_bytes:
+            raise OSError(
+                f"unexpected payload size: byte_count={byte_count}, data_len={len(data)}, expected={expected_bytes}"
+            )
+
+        registers = [int.from_bytes(data[i:i + 2], "big") for i in range(0, expected_bytes, 2)]
+        return [f"0x{value:04X}" for value in registers]
+
+
+def parse_modbus_settings_csv(text: str) -> dict:
+    reader = csv.reader(io.StringIO(text))
+    slaves_by_index: dict[int, dict] = {}
+    mappings: list[dict] = []
+    opcua_lookup = _load_opcua_variable_lookup()
+
+    for raw_row in reader:
+        row = [cell.strip() for cell in raw_row]
+        if not row or not any(row):
+            continue
+        key = row[0]
+        property_match = re.fullmatch(r"modbus\.server\.setting(\d+)\.(name|ip|port|type)", key)
+        compact_match = re.fullmatch(r"modbus\.server\.setting(\d+)\.(.+)", key)
+        mapping_match = re.fullmatch(r"modbus\.connection\.value(\d+)\.(.+)", key)
+
+        if property_match:
+            index = int(property_match.group(1))
+            prop = property_match.group(2)
+            slave = slaves_by_index.setdefault(index, _normalize_modbus_slave({}))
+            slave[prop] = row[1] if len(row) > 1 else ""
+            continue
+
+        if compact_match and len(row) >= 4:
+            index = int(compact_match.group(1))
+            slave = slaves_by_index.setdefault(index, _normalize_modbus_slave({}))
+            slave["name"] = compact_match.group(2).strip()
+            slave["ip"] = row[1]
+            slave["port"] = row[2]
+            slave["type"] = row[3]
+            continue
+
+        if mapping_match:
+            slave_name = mapping_match.group(2).strip()
+            node_id = row[2] if len(row) > 2 else ""
+            current_node = opcua_lookup.get(node_id, {})
+            mappings.append(
+                {
+                    "nodeId": node_id,
+                    "browsePath": current_node.get("browsePath", ""),
+                    "browseName": current_node.get("browseName", ""),
+                    "dataType": row[3] if len(row) > 3 and row[3] else current_node.get("dataType", ""),
+                    "slaveName": slave_name,
+                    "address": row[1] if len(row) > 1 else "",
+                }
+            )
+
+    ordered_slaves = [_normalize_modbus_slave(slaves_by_index[index]) for index in sorted(slaves_by_index)]
+    return prune_modbus_settings({"slaves": ordered_slaves, "mappings": mappings})
+
+
+def serialize_modbus_settings_csv(settings: dict) -> str:
+    normalized = prune_modbus_settings(settings)
+    opcua_lookup = _load_opcua_variable_lookup()
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\n", quoting=csv.QUOTE_MINIMAL)
+
+    for index, slave in enumerate(normalized["slaves"], start=1):
+        writer.writerow([f"modbus.server.setting{index}.name", slave["name"]])
+        writer.writerow([f"modbus.server.setting{index}.ip", slave["ip"]])
+        writer.writerow([f"modbus.server.setting{index}.port", slave["port"]])
+        writer.writerow([f"modbus.server.setting{index}.type", slave["type"]])
+
+    for index, mapping in enumerate(normalized["mappings"], start=1):
+        data_type = mapping["dataType"] or opcua_lookup.get(mapping["nodeId"], {}).get("dataType", "")
+        writer.writerow([
+            f"modbus.connection.value{index}.{mapping['slaveName']}",
+            mapping["address"],
+            mapping["nodeId"],
+            data_type,
+        ])
+
+    return buffer.getvalue()
 
 
 def read_opcua_config() -> dict:
@@ -1707,6 +2002,119 @@ def set_custom_page_settings(page_id: str):
     save_app_config(config)
 
     return jsonify({"ok": True, "page_id": page_id, "settings": payload})
+
+
+@app.get("/api/modbus")
+@auth_required
+def get_modbus_settings():
+    settings = empty_modbus_settings()
+    source = "default"
+
+    if MODBUS_TCP_FILE.is_file():
+        try:
+            settings = parse_modbus_settings_csv(MODBUS_TCP_FILE.read_text(encoding="utf-8"))
+        except (OSError, ValueError, IndexError, csv.Error) as error:
+            return jsonify({"error": f"failed to parse modbustcp.csv: {error}"}), 500
+        source = "file"
+    else:
+        draft = get_saved_modbus_draft()
+        if draft:
+            settings = prune_modbus_settings(draft)
+            source = "draft"
+
+    return jsonify(
+        {
+            "installed": OPCUA_SERVER_BIN.is_file(),
+            "file_exists": MODBUS_TCP_FILE.is_file(),
+            "source": source,
+            "settings": settings,
+        }
+    )
+
+
+@app.put("/api/modbus")
+@auth_required
+def save_modbus_settings():
+    allowed, response = require_root()
+    if not allowed:
+        return response
+
+    ok, message = ensure_opcua_mutable_paths()
+    if not ok:
+        return jsonify({"error": message}), get_opcua_error_status(message)
+
+    payload = request.get_json(force=True)
+    try:
+        settings = validate_modbus_settings(payload)
+    except TypeError as error:
+        return jsonify({"error": str(error)}), 400
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
+
+    try:
+        MODBUS_TCP_FILE.parent.mkdir(parents=True, exist_ok=True)
+        MODBUS_TCP_FILE.write_text(serialize_modbus_settings_csv(settings), encoding="utf-8")
+        save_modbus_draft(settings)
+    except PermissionError:
+        return jsonify({"error": f"permission denied for OPCUA install root: {str(OPCUA_INSTALL_ROOT)}"}), 500
+
+    return jsonify({"ok": True, "settings": settings, "file": str(MODBUS_TCP_FILE)})
+
+
+@app.post("/api/modbus/test-connection")
+@auth_required
+def test_modbus_connection():
+    payload = request.get_json(force=True)
+    if not isinstance(payload, dict):
+        return jsonify({"error": "payload must be a JSON object"}), 400
+
+    ip = str(payload.get("ip", "")).strip()
+    port_raw = str(payload.get("port", "")).strip()
+    timeout_ms_raw = str(payload.get("timeout_ms", "1500")).strip()
+    unit_id_raw = str(payload.get("unit_id", "1")).strip()
+
+    if not ip:
+        return jsonify({"error": "ip is required"}), 400
+    try:
+        ipaddress.IPv4Address(ip)
+    except ipaddress.AddressValueError:
+        return jsonify({"error": f"invalid IPv4 address: {ip}"}), 400
+
+    try:
+        port = int(port_raw)
+    except ValueError:
+        return jsonify({"error": "port must be between 1 and 65535"}), 400
+    if port < 1 or port > 65535:
+        return jsonify({"error": "port must be between 1 and 65535"}), 400
+
+    try:
+        timeout_ms = int(timeout_ms_raw)
+    except ValueError:
+        timeout_ms = 1500
+    timeout_ms = min(max(timeout_ms, 200), 10000)
+
+    try:
+        unit_id = int(unit_id_raw)
+    except ValueError:
+        return jsonify({"error": "unit_id must be between 0 and 255"}), 400
+    if unit_id < 0 or unit_id > 255:
+        return jsonify({"error": "unit_id must be between 0 and 255"}), 400
+
+    try:
+        hex_values = read_modbus_addr0_to_8_hex(ip, port, unit_id=unit_id, timeout_seconds=timeout_ms / 1000.0)
+    except (OSError, ValueError) as error:
+        return jsonify({"error": f"connection/read failed to {ip}:{port} ({error})"}), 502
+
+    return jsonify(
+        {
+            "ok": True,
+            "ip": ip,
+            "port": port,
+            "unit_id": unit_id,
+            "timeout_ms": timeout_ms,
+            "hex_values": hex_values,
+        }
+    )
 
 
 @app.post("/api/app/upload")

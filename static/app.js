@@ -7,6 +7,7 @@ const DUMMY_PAGES = [
 const TAB_DEFINITIONS = [
   { id: "auth-username", labelKey: "tabs.account" },
   { id: "basic", labelKey: "tabs.network" },
+  { id: "modbus", labelKey: "tabs.modbus" },
   { id: "opcua", labelKey: "tabs.opcua" },
   ...DUMMY_PAGES,
 ];
@@ -20,6 +21,8 @@ const OPCUA_MIN_USERS = 1;
 const OPCUA_MAX_USERS = 5;
 const OPCUA_MAX_SESSIONS = 16;
 const OPCUA_PRODUCT_NAME_REGEX = /^[\x20-\x7E]{1,64}$/;
+const MODBUS_MAX_SLAVES = 5;
+const MODBUS_DEFAULT_PORT = "502";
 
 let uploadMaxBytes = DEFAULT_UPLOAD_MAX_BYTES;
 let uploadMaxFiles = DEFAULT_UPLOAD_MAX_FILES;
@@ -27,12 +30,14 @@ let opcuaOverview = null;
 let lastBasicPayloadSnapshot = null;
 let lastOpcuaConfigSnapshot = null;
 let lastFormatGridSnapshot = null;
+let lastModbusDraftSnapshot = null;
 let opcuaRefreshInterval = null;
 let basicInterfaceReloadInProgress = false;
 let formatGridRows = [];
 let formatGridNamespaces = []; // array of {label: string} (max 5)
 let formatGridValidationTimer = null;
 let formatGridValidationRequestId = 0;
+let modbusOpcuaVariables = [];
 const FORMAT_GRID_NS_MAX = 5;
 const FORMAT_GRID_VALIDATE_DEBOUNCE_MS = 250;
 const RECONNECT_LOCK_STORAGE_KEY = "fieldGatewayReconnectPending";
@@ -107,6 +112,7 @@ function applyLanguage() {
   }
 
   applyLanguageToGrid();
+  applyLanguageToModbus();
 }
 
 function applyLanguageToGrid() {
@@ -129,6 +135,15 @@ function applyLanguageToGrid() {
 
   // Update toggle button label
   updateToggleButtonLabel();
+}
+
+function applyLanguageToModbus() {
+  const slaveBody = document.getElementById("modbus-slave-body");
+  if (!slaveBody) {
+    return;
+  }
+
+  renderModbusDraft(collectModbusDraftFromForm(), { preserveMappingVisibility: true });
 }
 
 function toggleLanguage() {
@@ -241,6 +256,15 @@ async function requestJson(url, options = {}) {
   return data;
 }
 
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
 function buildTabs() {
   const tabList = document.getElementById("tab-list");
   tabList.innerHTML = "";
@@ -343,6 +367,248 @@ function setTab(tabName) {
     startOpcuaAutoRefresh();
   } else {
     stopOpcuaAutoRefresh();
+  }
+}
+
+function createEmptyModbusSlave() {
+  return { name: "", ip: "", port: MODBUS_DEFAULT_PORT, type: "holding" };
+}
+
+function sanitizeModbusDraft(raw) {
+  const source = raw && typeof raw === "object" ? raw : {};
+  const slaves = Array.isArray(source.slaves)
+    ? source.slaves.slice(0, MODBUS_MAX_SLAVES).map((item) => ({
+        name: String(item?.name || "").trim(),
+        ip: String(item?.ip || "").trim(),
+        port: String(item?.port || MODBUS_DEFAULT_PORT).trim(),
+        type: String(item?.type || "holding").trim() || "holding",
+      }))
+    : [];
+  const mappings = Array.isArray(source.mappings)
+    ? source.mappings.map((item) => ({
+        nodeId: String(item?.nodeId || "").trim(),
+        browsePath: String(item?.browsePath || "").trim(),
+        browseName: String(item?.browseName || "").trim(),
+        dataType: String(item?.dataType || "").trim(),
+        slaveName: String(item?.slaveName || "").trim(),
+        address: String(item?.address || "").trim(),
+      }))
+    : [];
+  return { slaves, mappings };
+}
+
+function isValidIPv4Address(ip) {
+  const parts = ip.split(".");
+  if (parts.length !== 4) {
+    return false;
+  }
+
+  return parts.every((part) => {
+    if (!/^\d{1,3}$/.test(part)) {
+      return false;
+    }
+    const number = Number(part);
+    return Number.isInteger(number) && number >= 0 && number <= 255;
+  });
+}
+
+function isModbusMappingCardVisible() {
+  const card = document.getElementById("modbus-mapping-card");
+  return Boolean(card) && card.style.display !== "none";
+}
+
+function setModbusMappingCardVisible(visible) {
+  const card = document.getElementById("modbus-mapping-card");
+  if (card) {
+    card.style.display = visible ? "block" : "none";
+  }
+}
+
+function normalizeModbusMappingKey(mapping) {
+  return `${mapping.nodeId || ""}::${mapping.browsePath || ""}`;
+}
+
+function getModbusMappingSourceRows(savedMappings = []) {
+  const savedMap = new Map(savedMappings.map((item) => [normalizeModbusMappingKey(item), item]));
+  if (modbusOpcuaVariables.length > 0) {
+    return modbusOpcuaVariables.map((item) => ({
+      ...item,
+      ...(savedMap.get(normalizeModbusMappingKey(item)) || {}),
+    }));
+  }
+  return savedMappings;
+}
+
+function updateModbusSlaveCount(count) {
+  const target = document.getElementById("modbus-slave-count");
+  if (target) {
+    target.textContent = t("modbus.count.slaves", { count, max: MODBUS_MAX_SLAVES });
+  }
+}
+
+function updateModbusMappingStatus(message = "", count = 0) {
+  const target = document.getElementById("modbus-mapping-status");
+  if (!target) {
+    return;
+  }
+  const countLabel = t("modbus.count.mappings", { count });
+  target.textContent = message ? `${message} | ${countLabel}` : countLabel;
+}
+
+function renderModbusSlaveRows(slaves) {
+  const tbody = document.getElementById("modbus-slave-body");
+  if (!tbody) {
+    return;
+  }
+
+  tbody.innerHTML = "";
+  for (const [index, slave] of slaves.entries()) {
+    const row = document.createElement("tr");
+    row.dataset.rowIndex = String(index);
+    row.innerHTML = `
+      <td><input class="modbus-slave-name" type="text" value="${escapeHtml(slave.name)}" /></td>
+      <td><input class="modbus-slave-ip" type="text" inputmode="decimal" value="${escapeHtml(slave.ip)}" /></td>
+      <td><input class="modbus-slave-port" type="number" min="1" max="65535" inputmode="numeric" value="${escapeHtml(slave.port)}" /></td>
+      <td>
+        <select class="modbus-slave-type">
+          <option value="holding" ${slave.type === "holding" ? "selected" : ""}>${escapeHtml(t("modbus.type.holding"))}</option>
+        </select>
+      </td>
+      <td>
+        <div class="action-row">
+          <button type="button" class="action secondary modbus-connect-btn">${escapeHtml(t("modbus.actions.connect"))}</button>
+          <button type="button" class="action danger modbus-delete-btn">${escapeHtml(t("modbus.actions.delete"))}</button>
+        </div>
+      </td>
+    `;
+    tbody.appendChild(row);
+  }
+
+  updateModbusSlaveCount(slaves.length);
+  const addButton = document.getElementById("modbus-add-slave-btn");
+  if (addButton) {
+    addButton.disabled = slaves.length >= MODBUS_MAX_SLAVES;
+  }
+}
+
+function renderModbusMappingRows(draft) {
+  const tbody = document.getElementById("modbus-mapping-body");
+  if (!tbody) {
+    return;
+  }
+
+  const sourceRows = getModbusMappingSourceRows(draft.mappings || []);
+  if (sourceRows.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="5" class="modbus-empty-cell">${escapeHtml(t("modbus.empty.mapping"))}</td></tr>`;
+    updateModbusMappingStatus("", 0);
+    return;
+  }
+
+  const slaveOptions = draft.slaves.map((slave) => slave.name).filter(Boolean);
+  tbody.innerHTML = "";
+  for (const item of sourceRows) {
+    const row = document.createElement("tr");
+    row.dataset.nodeId = item.nodeId || "";
+    row.dataset.browsePath = item.browsePath || "";
+    row.dataset.browseName = item.browseName || "";
+    row.dataset.dataType = item.dataType || "";
+
+    const optionsHtml = ['<option value=""></option>']
+      .concat(
+        slaveOptions.map((name) => (
+          `<option value="${escapeHtml(name)}" ${item.slaveName === name ? "selected" : ""}>${escapeHtml(name)}</option>`
+        )),
+      )
+      .join("");
+
+    row.innerHTML = `
+      <td>${escapeHtml(item.browsePath || item.browseName || item.nodeId || "")}</td>
+      <td>${escapeHtml(item.dataType || "")}</td>
+      <td><select class="modbus-mapping-slave">${optionsHtml}</select></td>
+      <td><input class="modbus-mapping-address" type="text" value="${escapeHtml(item.address || "")}" /></td>
+      <td><button type="button" class="action secondary modbus-clear-mapping-btn">${escapeHtml(t("modbus.actions.clear"))}</button></td>
+    `;
+    tbody.appendChild(row);
+  }
+
+  updateModbusMappingStatus("", sourceRows.length);
+}
+
+function renderModbusDraft(draft, options = {}) {
+  const sanitized = sanitizeModbusDraft(draft);
+  const preserveVisibility = Boolean(options.preserveMappingVisibility);
+  const showMapping = preserveVisibility
+    ? isModbusMappingCardVisible()
+    : sanitized.mappings.length > 0 || isModbusMappingCardVisible();
+
+  renderModbusSlaveRows(sanitized.slaves);
+  renderModbusMappingRows(sanitized);
+  setModbusMappingCardVisible(showMapping);
+
+  const help = document.querySelector('[data-i18n="modbus.slaves.help"]');
+  if (help) {
+    help.textContent = t("modbus.slaves.help", { max: MODBUS_MAX_SLAVES });
+  }
+}
+
+function collectModbusDraftFromForm() {
+  const slaves = Array.from(document.querySelectorAll("#modbus-slave-body tr[data-row-index]"))
+    .map((row) => ({
+      name: row.querySelector(".modbus-slave-name")?.value.trim() || "",
+      ip: row.querySelector(".modbus-slave-ip")?.value.trim() || "",
+      port: row.querySelector(".modbus-slave-port")?.value.trim() || "",
+      type: row.querySelector(".modbus-slave-type")?.value.trim() || "holding",
+    }))
+    .filter((item) => item.name || item.ip || item.port || item.type !== "holding");
+
+  const mappings = Array.from(document.querySelectorAll("#modbus-mapping-body tr[data-browse-path], #modbus-mapping-body tr[data-node-id]"))
+    .map((row) => ({
+      nodeId: row.dataset.nodeId || "",
+      browsePath: row.dataset.browsePath || "",
+      browseName: row.dataset.browseName || "",
+      dataType: row.dataset.dataType || "",
+      slaveName: row.querySelector(".modbus-mapping-slave")?.value.trim() || "",
+      address: row.querySelector(".modbus-mapping-address")?.value.trim() || "",
+    }))
+    .filter((item) => item.slaveName || item.address);
+
+  return { slaves, mappings };
+}
+
+function hasUnsavedModbusChanges() {
+  if (!lastModbusDraftSnapshot) {
+    return false;
+  }
+  return JSON.stringify(collectModbusDraftFromForm()) !== JSON.stringify(lastModbusDraftSnapshot);
+}
+
+function validateModbusDraft(draft) {
+  const names = new Set();
+  for (const slave of draft.slaves) {
+    if (!slave.name) {
+      throw new Error(t("msg.modbus_name_required"));
+    }
+    const normalizedName = slave.name.toLowerCase();
+    if (names.has(normalizedName)) {
+      throw new Error(t("msg.modbus_name_duplicate"));
+    }
+    if (!isValidIPv4Address(slave.ip)) {
+      throw new Error(t("msg.modbus_ip_invalid", { name: slave.name }));
+    }
+    const port = Number(slave.port);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new Error(t("msg.modbus_port_invalid"));
+    }
+    names.add(normalizedName);
+  }
+
+  for (const mapping of draft.mappings) {
+    if (!mapping.slaveName || !mapping.address) {
+      throw new Error(t("msg.modbus_mapping_invalid"));
+    }
+    if (!names.has(mapping.slaveName.toLowerCase())) {
+      throw new Error(t("msg.modbus_mapping_unknown_slave", { name: mapping.slaveName }));
+    }
   }
 }
 
@@ -662,6 +928,16 @@ function requestTabChange(targetTabId) {
     }
     if (lastOpcuaConfigSnapshot) {
       applyOpcuaConfigDraftToForm(lastOpcuaConfigSnapshot);
+    }
+  }
+
+  if (activeTabId === "modbus" && hasUnsavedModbusChanges()) {
+    const shouldMove = window.confirm(t("msg.modbus_unsaved"));
+    if (!shouldMove) {
+      return;
+    }
+    if (lastModbusDraftSnapshot) {
+      renderModbusDraft(lastModbusDraftSnapshot, { preserveMappingVisibility: true });
     }
   }
 
@@ -1715,6 +1991,191 @@ async function loadCustomSettings() {
   }
 }
 
+async function loadModbusMappingSource(showStatus = false) {
+  try {
+    const data = await requestJson("/api/opcua/format-grid");
+    modbusOpcuaVariables = Array.isArray(data.rows)
+      ? data.rows
+          .filter((row) => row.NodeClass === "Variable")
+          .map((row) => ({
+            nodeId: row.NodeIdNumber ? `ns=${row.NamespaceIndex};i=${row.NodeIdNumber}` : "",
+            browsePath: row.BrowsePath || "",
+            browseName: row.BrowseName || "",
+            dataType: row.DataType || "",
+            slaveName: "",
+            address: "",
+          }))
+      : [];
+    if (showStatus) {
+      showMessageOn("modbus", t("msg.modbus_mapping_source_loaded"));
+    }
+  } catch (_error) {
+    modbusOpcuaVariables = [];
+    if (showStatus) {
+      showMessageOn("modbus", t("msg.modbus_mapping_source_unavailable"), true);
+    }
+  }
+}
+
+async function loadModbusDraft() {
+  try {
+    const data = await requestJson("/api/modbus");
+    const draft = sanitizeModbusDraft(data.settings || {});
+    renderModbusDraft(draft);
+    lastModbusDraftSnapshot = draft;
+  } catch (_error) {
+    const draft = sanitizeModbusDraft({});
+    renderModbusDraft(draft);
+    lastModbusDraftSnapshot = draft;
+  }
+}
+
+async function addModbusSlave() {
+  const draft = collectModbusDraftFromForm();
+  if (draft.slaves.length >= MODBUS_MAX_SLAVES) {
+    showMessageOn("modbus", t("msg.modbus_max_slaves", { max: MODBUS_MAX_SLAVES }), true);
+    return;
+  }
+  draft.slaves.push(createEmptyModbusSlave());
+  renderModbusDraft(draft, { preserveMappingVisibility: true });
+  showMessageOn("modbus", t("msg.modbus_slave_added"));
+}
+
+function deleteModbusSlave(rowIndex) {
+  const draft = collectModbusDraftFromForm();
+  const deleted = draft.slaves[rowIndex];
+  draft.slaves.splice(rowIndex, 1);
+  if (deleted?.name) {
+    draft.mappings = draft.mappings.filter((item) => item.slaveName !== deleted.name);
+  }
+  renderModbusDraft(draft, { preserveMappingVisibility: true });
+  showMessageOn("modbus", t("msg.modbus_slave_deleted"));
+}
+
+function getValidatedModbusSlave(row) {
+  const slave = {
+    name: row.querySelector(".modbus-slave-name")?.value.trim() || "",
+    ip: row.querySelector(".modbus-slave-ip")?.value.trim() || "",
+    port: row.querySelector(".modbus-slave-port")?.value.trim() || "",
+    type: row.querySelector(".modbus-slave-type")?.value.trim() || "holding",
+  };
+  validateModbusDraft({ slaves: [slave], mappings: [] });
+  return slave;
+}
+
+function formatAddrHexValues(hexValues) {
+  if (!Array.isArray(hexValues) || hexValues.length === 0) {
+    return "";
+  }
+  return hexValues
+    .slice(0, 9)
+    .map((value, index) => `ADDR${index}=${value}`)
+    .join(" ");
+}
+
+async function testModbusSlaveConnection(row) {
+  let slave;
+  try {
+    slave = getValidatedModbusSlave(row);
+  } catch (error) {
+    showMessageOn("modbus", error.message || t("msg.modbus_connect_failed", { ip: "", port: "" }), true);
+    return;
+  }
+
+  try {
+    const data = await requestJson("/api/modbus/test-connection", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ip: slave.ip, port: slave.port, unit_id: 1, timeout_ms: 1500 }),
+    });
+    const values = formatAddrHexValues(data?.hex_values);
+    showMessageOn("modbus", t("msg.modbus_connect_success", { ip: slave.ip, port: slave.port, values }));
+  } catch (error) {
+    showMessageOn("modbus", error.message || t("msg.modbus_connect_failed", { ip: slave.ip, port: slave.port }), true);
+    return;
+  }
+}
+
+async function openModbusMapping() {
+  await loadModbusMappingSource(true);
+  setModbusMappingCardVisible(true);
+  renderModbusDraft(collectModbusDraftFromForm(), { preserveMappingVisibility: true });
+  showMessageOn("modbus", t("msg.modbus_mapping_opened"));
+}
+
+async function saveModbusDraft() {
+  const draft = collectModbusDraftFromForm();
+  try {
+    validateModbusDraft(draft);
+  } catch (error) {
+    showMessageOn("modbus", error.message || t("msg.modbus_save_failed"), true);
+    return;
+  }
+
+  if (lastModbusDraftSnapshot && JSON.stringify(draft) === JSON.stringify(lastModbusDraftSnapshot)) {
+    window.alert(t("msg.no_changes"));
+    return;
+  }
+
+  if (!window.confirm(t("msg.modbus_confirm"))) {
+    showMessageOn("modbus", t("msg.save_canceled"));
+    return;
+  }
+
+  let data;
+  try {
+    data = await requestJson("/api/modbus", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(draft),
+    });
+  } catch (error) {
+    showMessageOn("modbus", error.message || t("msg.modbus_save_failed"), true);
+    return;
+  }
+
+  lastModbusDraftSnapshot = sanitizeModbusDraft(data.settings || draft);
+  renderModbusDraft(lastModbusDraftSnapshot, { preserveMappingVisibility: true });
+  showMessageOn("modbus", t("msg.modbus_saved"));
+}
+
+async function handleModbusSlaveTableClick(event) {
+  const row = event.target.closest("tr[data-row-index]");
+  if (!row) {
+    return;
+  }
+  if (event.target.closest(".modbus-delete-btn")) {
+    deleteModbusSlave(Number(row.dataset.rowIndex || "-1"));
+    return;
+  }
+  if (event.target.closest(".modbus-connect-btn")) {
+    await testModbusSlaveConnection(row);
+  }
+}
+
+function handleModbusSlaveTableInput(event) {
+  if (!event.target.closest("#modbus-slave-body")) {
+    return;
+  }
+  renderModbusMappingRows(collectModbusDraftFromForm());
+}
+
+function handleModbusMappingTableClick(event) {
+  const row = event.target.closest("tr[data-browse-path], tr[data-node-id]");
+  if (!row || !event.target.closest(".modbus-clear-mapping-btn")) {
+    return;
+  }
+  const slave = row.querySelector(".modbus-mapping-slave");
+  const address = row.querySelector(".modbus-mapping-address");
+  if (slave) {
+    slave.value = "";
+  }
+  if (address) {
+    address.value = "";
+  }
+  showMessageOn("modbus", t("msg.modbus_mapping_cleared"));
+}
+
 async function submitBasicForm(event) {
   if (event && typeof event.preventDefault === "function") {
     event.preventDefault();
@@ -2220,6 +2681,13 @@ function bindEvents() {
     showMessageOn("opcua", t("opcua.grid.reloaded"));
   });
 
+  document.getElementById("modbus-add-slave-btn").addEventListener("click", addModbusSlave);
+  document.getElementById("modbus-open-mapping-btn").addEventListener("click", openModbusMapping);
+  document.getElementById("modbus-save-btn").addEventListener("click", saveModbusDraft);
+  document.getElementById("modbus-slave-body").addEventListener("click", handleModbusSlaveTableClick);
+  document.getElementById("modbus-slave-body").addEventListener("input", handleModbusSlaveTableInput);
+  document.getElementById("modbus-mapping-body").addEventListener("click", handleModbusMappingTableClick);
+
   for (const form of document.querySelectorAll(".custom-form")) {
     bindClickOnlyAction(form, form.querySelector(".custom-save-btn"), submitCustomForm);
   }
@@ -2231,6 +2699,7 @@ async function loadProtectedData() {
   await loadAppSettings();
   await loadAuthSettings();
   await loadCustomSettings();
+  await loadModbusDraft();
 }
 
 async function init() {
