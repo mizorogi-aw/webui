@@ -21,6 +21,51 @@ body {
   min-height: 100vh;
 }
 
+body.theme-dark {
+  --bg: #10161b;
+  --card: #1a232b;
+  --ink: #e6edf3;
+  --accent: #f08a4b;
+  --accent-2: #d9b65b;
+  --line: #3a4a56;
+  background: radial-gradient(circle at 10% 10%, #273342, var(--bg) 42%),
+    radial-gradient(circle at 100% 100%, #1e2d3a, transparent 35%),
+    var(--bg);
+}
+
+body.theme-dark .container {
+  background: color-mix(in srgb, var(--card) 93%, black 7%);
+  box-shadow: 0 15px 30px rgb(0 0 0 / 30%);
+}
+
+body.theme-dark .upload-card {
+  background: #1d2730;
+}
+
+body.theme-dark .upload-card.grid-editor-panel {
+  background: #1c2830;
+  border-color: #4a6b62;
+}
+
+body.theme-dark .logout-card {
+  background: color-mix(in srgb, var(--card) 95%, black 5%);
+  box-shadow: 0 15px 30px rgb(0 0 0 / 28%);
+}
+
+body.theme-dark .logout-eyebrow,
+body.theme-dark .app-header p,
+body.theme-dark .logout-message {
+  color: #b8c7cf;
+}
+
+body.theme-dark .bg-1 {
+  background: #4d3429;
+}
+
+body.theme-dark .bg-2 {
+  background: #294040;
+}
+
 body.logout-page {
   display: grid;
   place-items: center;
@@ -156,7 +201,8 @@ body.logout-page {
 }
 
 #logout-btn,
-#language-toggle-btn {
+#language-toggle-btn,
+#theme-toggle-btn {
   min-width: 118px;
 }
 
@@ -195,6 +241,150 @@ body.logout-page {
 
 .tab:hover {
   filter: brightness(0.98);
+}
+
+body.theme-dark input,
+body.theme-dark select,
+body.theme-dark textarea {
+  background: #2a3a46;
+  color: #e6edf3;
+  border-color: #5a7080;
+}
+
+body.theme-dark input::placeholder,
+body.theme-dark textarea::placeholder {
+  color: #8aa0ae;
+}
+
+body.theme-dark .tab,
+body.theme-dark .action.secondary {
+  background: #22303a;
+  color: #dce8ee;
+  border-color: #4f6572;
+}
+
+body.theme-dark .action {
+  background: #2f6f65;
+}
+
+body.theme-dark .action.danger {
+  background: #a45043;
+}
+
+body.theme-dark .windows-ipv4 {
+  background: #1e2c38;
+  border-color: #4a6070;
+}
+
+body.theme-dark .section-sub {
+  color: #90aab8;
+}
+
+body.theme-dark .ipv4-segment span {
+  color: #8fbfcf;
+}
+
+body.theme-dark .file-item {
+  background: #1e2c38;
+}
+
+body.theme-dark .custom-json {
+  background: #1a2730;
+  color: #dce8ee;
+}
+
+body.theme-dark .custom-help {
+  color: #8aa0ae;
+}
+
+/* --- format-grid table dark overrides --- */
+body.theme-dark .format-grid-wrap {
+  border-color: #3a5060;
+}
+
+body.theme-dark .format-grid thead tr,
+body.theme-dark .format-grid thead th:nth-child(1),
+body.theme-dark .format-grid thead th:nth-child(2),
+body.theme-dark .format-grid thead th:nth-child(3) {
+  background: #1a2e3c !important;
+  color: #b8d4e0;
+}
+
+body.theme-dark .format-grid tbody td:nth-child(1),
+body.theme-dark .format-grid tbody td:nth-child(2),
+body.theme-dark .format-grid tbody td:nth-child(3) {
+  background: #1c2e3c !important;
+}
+
+body.theme-dark .format-grid tbody tr:nth-child(even) {
+  background: #1e2f3e;
+}
+
+body.theme-dark .format-grid tbody tr:nth-child(even) td:nth-child(1),
+body.theme-dark .format-grid tbody tr:nth-child(even) td:nth-child(2),
+body.theme-dark .format-grid tbody tr:nth-child(even) td:nth-child(3) {
+  background: #1e2f3e !important;
+}
+
+body.theme-dark .format-grid tbody tr:hover {
+  background: #243846;
+}
+
+body.theme-dark .format-grid tbody tr:hover td:nth-child(1),
+body.theme-dark .format-grid tbody tr:hover td:nth-child(2),
+body.theme-dark .format-grid tbody tr:hover td:nth-child(3) {
+  background: #243846 !important;
+}
+
+body.theme-dark .format-grid tbody tr.grid-row-error td:nth-child(1),
+body.theme-dark .format-grid tbody tr.grid-row-error td:nth-child(2),
+body.theme-dark .format-grid tbody tr.grid-row-error td:nth-child(3) {
+  background: #3d1a1a !important;
+}
+
+body.theme-dark .format-grid th,
+body.theme-dark .format-grid td {
+  border-color: #3a5060;
+}
+
+/* --- format-grid input/select overrides (explicit #fff must be beaten) --- */
+body.theme-dark .format-grid input[type="text"],
+body.theme-dark .format-grid select {
+  background: #2a3a46 !important;
+  color: #e6edf3 !important;
+  border-color: #5a7080 !important;
+}
+
+body.theme-dark .format-grid input[type="text"]::placeholder {
+  color: #8aa0ae !important;
+}
+
+body.theme-dark .format-grid input:disabled,
+body.theme-dark .format-grid select:disabled {
+  background: #1a2730 !important;
+  color: #5a7a8a !important;
+}
+
+/* --- OPCUA status cards --- */
+body.theme-dark .opcua-status-item {
+  background: #1e2c38;
+  border-color: #3a5060;
+}
+
+body.theme-dark .opcua-status-label {
+  color: #8fbfcf;
+}
+
+/* --- Namespace editor section --- */
+body.theme-dark .ns-editor-section {
+  background: #1e2c38;
+  border-color: #3a5060;
+}
+
+body.theme-dark .ns-label-input {
+  background: #2a3a46;
+  color: #e6edf3;
+  border-color: #5a7080;
 }
 
 .panel {

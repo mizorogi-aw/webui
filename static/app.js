@@ -36,6 +36,9 @@ let formatGridValidationRequestId = 0;
 const FORMAT_GRID_NS_MAX = 5;
 const FORMAT_GRID_VALIDATE_DEBOUNCE_MS = 250;
 const RECONNECT_LOCK_STORAGE_KEY = "fieldGatewayReconnectPending";
+const THEME_STORAGE_KEY = "fieldGatewayTheme";
+const THEME_LIGHT = "light";
+const THEME_DARK = "dark";
 const i18n = window.FieldGatewayI18n;
 
 function t(key, params = {}) {
@@ -53,6 +56,7 @@ function applyLanguage() {
   if (languageButton && i18n) {
     languageButton.textContent = i18n.getLanguage() === "ja" ? t("actions.language.en") : t("actions.language.ja");
   }
+  updateThemeToggleLabel();
 
   for (const tab of document.querySelectorAll(".tab")) {
     const definition = TAB_DEFINITIONS.find((item) => item.id === tab.dataset.tab);
@@ -133,6 +137,47 @@ function toggleLanguage() {
   }
   i18n.toggleLanguage();
   applyLanguage();
+}
+
+function normalizeTheme(value) {
+  return value === THEME_DARK ? THEME_DARK : THEME_LIGHT;
+}
+
+function getSavedTheme() {
+  try {
+    return normalizeTheme(window.localStorage.getItem(THEME_STORAGE_KEY));
+  } catch (_error) {
+    return THEME_LIGHT;
+  }
+}
+
+function getCurrentTheme() {
+  return document.body.classList.contains("theme-dark") ? THEME_DARK : THEME_LIGHT;
+}
+
+function applyTheme(theme, persist = true) {
+  const normalized = normalizeTheme(theme);
+  document.body.classList.toggle("theme-dark", normalized === THEME_DARK);
+  if (persist) {
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, normalized);
+    } catch (_error) {
+      // ignore localStorage failures
+    }
+  }
+  updateThemeToggleLabel();
+}
+
+function updateThemeToggleLabel() {
+  const btn = document.getElementById("theme-toggle-btn");
+  if (!btn) return;
+  const currentTheme = getCurrentTheme();
+  btn.textContent = currentTheme === THEME_DARK ? t("actions.theme.light") : t("actions.theme.dark");
+}
+
+function toggleTheme() {
+  const nextTheme = getCurrentTheme() === THEME_DARK ? THEME_LIGHT : THEME_DARK;
+  applyTheme(nextTheme);
 }
 
 function showMessage(msg, isError = false) {
@@ -2150,6 +2195,7 @@ function bindEvents() {
   bindClickOnlyAction(document.getElementById("opcua-cert-form"), document.getElementById("opcua-cert-upload-btn"), submitOpcuaCertForm);
 
   document.getElementById("language-toggle-btn").addEventListener("click", toggleLanguage);
+  document.getElementById("theme-toggle-btn").addEventListener("click", toggleTheme);
   document.getElementById("logout-btn").addEventListener("click", logout);
   document.getElementById("opcua-reload-btn").addEventListener("click", async () => {
     await loadOpcua();
@@ -2190,6 +2236,7 @@ async function loadProtectedData() {
 async function init() {
   buildTabs();
   buildCustomPanels();
+  applyTheme(getSavedTheme(), false);
   applyLanguage();
   bindReconnectLockEvents();
   bindEvents();

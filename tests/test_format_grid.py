@@ -78,6 +78,32 @@ class FormatCsvToDtoTests(unittest.TestCase):
         self.assertEqual(row["Cyclic"], "120000")
 
 
+class DtoToFormatCsvRowTests(unittest.TestCase):
+    def test_updates_display_name_and_description_when_browse_name_changes(self):
+        parsed = main.parse_format_csv(SAMPLE_CSV)
+        existing = parsed["data"][1]
+        dto = {
+            "_row": 1,
+            "NodeClass": "Variable",
+            "BrowsePath": "Objects/Device",
+            "BrowseName": "TempSensor",
+            "NamespaceIndex": "0",
+            "NodeIdNumber": "10002",
+            "DataType": "DOUBLE",
+            "Access": "1",
+            "Historizing": "1",
+            "EventNotifier": "",
+            "Cyclic": "120000",
+            "Param1": "0",
+        }
+
+        merged = main.dto_to_format_csv_row(dto, existing)
+
+        self.assertEqual(merged[main._FC_BROWSE_NAME], "TempSensor")
+        self.assertEqual(merged[main._FC_DISPLAY_NAME], "en:TempSensor")
+        self.assertEqual(merged[main._FC_DESCRIPTION], "en:TempSensor")
+
+
 class ValidateFormatGridTests(unittest.TestCase):
     def _make_rows(self):
         return [

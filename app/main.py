@@ -483,6 +483,11 @@ def _compose_access_level_for_csv(ui_access: str, historizing: str) -> str:
     return str(base)
 
 
+def _format_locale_text(value: str) -> str:
+    """Build locale-prefixed text used by DisplayName/Description columns."""
+    return f"en:{value}" if value else ""
+
+
 def format_csv_to_dto(parsed: dict) -> list[dict]:
     """Convert parsed format.csv data rows to grid DTOs (editable columns only)."""
     rows = []
@@ -529,8 +534,8 @@ def _build_new_csv_row(dto: dict) -> list[str]:
     row[_FC_BROWSE_NAME] = browse_name
     row[_FC_TYPE_DEFINITION_ID] = _FC_OBJECT_TYPE_DEF if node_class == "Object" else _FC_VARIABLE_TYPE_DEF
     row[_FC_HAS_MODELLING_RULE] = _FC_HAS_MODELLING_RULE_DEFAULT
-    row[_FC_DISPLAY_NAME] = f"en:{browse_name}" if browse_name else ""
-    row[_FC_DESCRIPTION] = f"en:{browse_name}" if browse_name else ""
+    row[_FC_DISPLAY_NAME] = _format_locale_text(browse_name)
+    row[_FC_DESCRIPTION] = _format_locale_text(browse_name)
     row[_FC_WRITE_MASK] = "0"
     if node_class == "Object":
         row[_FC_OBJECT_EVENT_NOTIFIER] = event_notifier if event_notifier else "0"
@@ -563,6 +568,8 @@ def dto_to_format_csv_row(dto: dict, existing_row: list[str] | None) -> list[str
     id_num = str(dto.get("NodeIdNumber", "")).strip()
     row[_FC_NODE_ID] = f"ns={ns_idx};i={id_num}" if id_num else ""
     row[_FC_BROWSE_NAME] = str(dto.get("BrowseName", row[_FC_BROWSE_NAME])).strip()
+    row[_FC_DISPLAY_NAME] = _format_locale_text(row[_FC_BROWSE_NAME])
+    row[_FC_DESCRIPTION] = _format_locale_text(row[_FC_BROWSE_NAME])
     data_type_short = str(dto.get("DataType", "")).strip()
     row[_FC_DATA_TYPE] = _FC_DATATYPE_SHORT_TO_PATH.get(data_type_short, data_type_short)
     row[_FC_HISTORIZING] = str(dto.get("Historizing", row[_FC_HISTORIZING])).strip()
