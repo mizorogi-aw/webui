@@ -103,6 +103,54 @@ class ModbusReadTests(unittest.TestCase):
             ],
         )
 
+    def test_read_modbus_addr0_to_8_hex_rejects_short_mbap_length(self):
+        mbap = bytes([0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x01])
+
+        fake_socket = self._FakeSocket([mbap])
+        with patch.object(main.socket, "create_connection", return_value=fake_socket):
+            with self.assertRaisesRegex(OSError, "invalid MBAP length"):
+                main.read_modbus_addr0_to_8_hex("192.168.100.9", 503, unit_id=1, timeout_seconds=1.0)
+
+    def test_read_modbus_addr0_to_8_hex_rejects_unexpected_function_code(self):
+        mbap = bytes([0x00, 0x01, 0x00, 0x00, 0x00, 0x15, 0x01])
+        pdu = bytes([
+            0x04, 0x12,
+            0x00, 0x01,
+            0x00, 0x02,
+            0x00, 0x03,
+            0x00, 0x04,
+            0x00, 0x05,
+            0x00, 0x06,
+            0x00, 0x07,
+            0x00, 0x08,
+            0x00, 0x09,
+        ])
+
+        fake_socket = self._FakeSocket([mbap, pdu])
+        with patch.object(main.socket, "create_connection", return_value=fake_socket):
+            with self.assertRaisesRegex(OSError, "unexpected function code"):
+                main.read_modbus_addr0_to_8_hex("192.168.100.9", 503, unit_id=1, timeout_seconds=1.0)
+
+    def test_read_modbus_addr0_to_8_hex_rejects_byte_count_mismatch(self):
+        mbap = bytes([0x00, 0x01, 0x00, 0x00, 0x00, 0x15, 0x01])
+        pdu = bytes([
+            0x03, 0x10,
+            0x00, 0x01,
+            0x00, 0x02,
+            0x00, 0x03,
+            0x00, 0x04,
+            0x00, 0x05,
+            0x00, 0x06,
+            0x00, 0x07,
+            0x00, 0x08,
+            0x00, 0x09,
+        ])
+
+        fake_socket = self._FakeSocket([mbap, pdu])
+        with patch.object(main.socket, "create_connection", return_value=fake_socket):
+            with self.assertRaisesRegex(OSError, "unexpected payload size"):
+                main.read_modbus_addr0_to_8_hex("192.168.100.9", 503, unit_id=1, timeout_seconds=1.0)
+
 
 class FormatCsvToDtoTests(unittest.TestCase):
     def setUp(self):
@@ -602,6 +650,32 @@ class ModbusSettingsTests(unittest.TestCase):
         self.assertEqual(response.status_code, 502)
         data = response.get_json()
         self.assertIn("connection/read failed", data["error"])
+
+    def test_modbus_connection_endpoint_returns_hex_values_in_addr_format(self):
+        """hex_values must be "0x{XXXX}" (4 uppercase hex digits), one entry per register."""
+        import re
+        pattern = re.compile(r"^0x[0-9A-F]{4}$")
+        fake_registers = [0x0000, 0x0001, 0x00FF, 0xABCD, 0xFFFF, 0x1234, 0x5678, 0x9ABC, 0xDEF0]
+        expected = [f"0x{v:04X}" for v in fake_registers]
+        with patch.object(main, "read_modbus_addr0_to_8_hex", return_value=expected):
+            response = self.client.post(
+                "/api/modbus/test-connection",
+                json={"ip": "10.0.0.1", "port": "502", "unit_id": 5, "timeout_ms": 500},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        data = response.get_json()
+        self.assertEqual(data["unit_id"], 5)
+        hex_values = data["hex_values"]
+        self.assertEqual(len(hex_values), len(fake_registers))
+        for i, value in enumerate(hex_values):
+            self.assertRegex(value, pattern, msg=f"hex_values[{i}]={value!r} does not match 0x[0-9A-F]{{4}}")
+        # Verify the JS formatAddrHexValues format: ADDR0=0x.... ADDR1=0x.... ...
+        addr_strs = [f"ADDR{i}={v}" for i, v in enumerate(hex_values)]
+        formatted = " ".join(addr_strs)
+        self.assertIn("ADDR0=0x0000", formatted)
+        self.assertIn("ADDR4=0xFFFF", formatted)
+        self.assertIn("ADDR8=0xDEF0", formatted)
 
 
 if __name__ == "__main__":

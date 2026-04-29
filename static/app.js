@@ -1,5 +1,4 @@
 const DUMMY_PAGES = [
-  { id: "dummy-network", labelKey: "tabs.dummy_network" },
   { id: "dummy-runtime", labelKey: "tabs.dummy_runtime" },
   { id: "dummy-advanced", labelKey: "tabs.dummy_advanced" },
 ];
@@ -7,8 +6,8 @@ const DUMMY_PAGES = [
 const TAB_DEFINITIONS = [
   { id: "auth-username", labelKey: "tabs.account" },
   { id: "basic", labelKey: "tabs.network" },
-  { id: "modbus", labelKey: "tabs.modbus" },
   { id: "opcua", labelKey: "tabs.opcua" },
+  { id: "modbus", labelKey: "tabs.modbus" },
   ...DUMMY_PAGES,
 ];
 
@@ -239,7 +238,13 @@ function bindReconnectLockEvents() {
 }
 
 async function requestJson(url, options = {}) {
-  const res = await fetch(url, options);
+  let requestUrl = url;
+  if (typeof url === "string") {
+    const baseUrl = `${window.location.protocol}//${window.location.host}`;
+    requestUrl = new URL(url, baseUrl).toString();
+  }
+
+  const res = await fetch(requestUrl, options);
   let data = {};
   try {
     data = await res.json();
@@ -371,7 +376,7 @@ function setTab(tabName) {
 }
 
 function createEmptyModbusSlave() {
-  return { name: "", ip: "", port: MODBUS_DEFAULT_PORT, type: "holding" };
+  return { name: "", ip: "", port: MODBUS_DEFAULT_PORT, type: "holding", unitId: 1 };
 }
 
 function sanitizeModbusDraft(raw) {
@@ -382,6 +387,7 @@ function sanitizeModbusDraft(raw) {
         ip: String(item?.ip || "").trim(),
         port: String(item?.port || MODBUS_DEFAULT_PORT).trim(),
         type: String(item?.type || "holding").trim() || "holding",
+        unitId: Math.min(255, Math.max(0, parseInt(item?.unitId ?? 1, 10) || 1)),
       }))
     : [];
   const mappings = Array.isArray(source.mappings)
@@ -455,6 +461,65 @@ function updateModbusMappingStatus(message = "", count = 0) {
   target.textContent = message ? `${message} | ${countLabel}` : countLabel;
 }
 
+function clearModbusConnectionResult() {
+  const card = document.getElementById("modbus-connect-result-card");
+  const summary = document.getElementById("modbus-connect-result-summary");
+  const body = document.getElementById("modbus-connect-result-body");
+  const tableWrap = card?.querySelector(".modbus-grid-wrap");
+  if (summary) {
+    summary.textContent = "";
+    summary.classList.remove("modbus-result-summary", "is-error");
+  }
+  if (body) {
+    body.innerHTML = "";
+  }
+  if (tableWrap) {
+    tableWrap.hidden = false;
+  }
+  if (card) {
+    card.hidden = true;
+  }
+}
+
+function renderModbusConnectionResult({ ip = "", port = "", unitId = "", hexValues = [], errorMessage = "" } = {}) {
+  const card = document.getElementById("modbus-connect-result-card");
+  const summary = document.getElementById("modbus-connect-result-summary");
+  const body = document.getElementById("modbus-connect-result-body");
+  const tableWrap = card?.querySelector(".modbus-grid-wrap");
+  if (!card || !summary || !body) {
+    return;
+  }
+
+  const isError = Boolean(errorMessage);
+  summary.textContent = isError
+    ? (errorMessage || t("modbus.result.summary.error", { ip, port }))
+    : t("modbus.result.summary.success", { ip, port, unitId });
+  summary.classList.add("modbus-result-summary");
+  summary.classList.toggle("is-error", isError);
+
+  body.innerHTML = "";
+  if (tableWrap) {
+    tableWrap.hidden = isError;
+  }
+
+  if (!isError && Array.isArray(hexValues) && hexValues.length > 0) {
+    hexValues.slice(0, 9).forEach((value, index) => {
+      const row = document.createElement("tr");
+      row.innerHTML = `
+        <td>ADDR${index}</td>
+        <td>${escapeHtml(value)}</td>
+      `;
+      body.appendChild(row);
+    });
+  } else if (!isError) {
+    const row = document.createElement("tr");
+    row.innerHTML = `<td colspan="2" class="modbus-result-empty">${escapeHtml(t("modbus.result.empty"))}</td>`;
+    body.appendChild(row);
+  }
+
+  card.hidden = false;
+}
+
 function renderModbusSlaveRows(slaves) {
   const tbody = document.getElementById("modbus-slave-body");
   if (!tbody) {
@@ -469,6 +534,7 @@ function renderModbusSlaveRows(slaves) {
       <td><input class="modbus-slave-name" type="text" value="${escapeHtml(slave.name)}" /></td>
       <td><input class="modbus-slave-ip" type="text" inputmode="decimal" value="${escapeHtml(slave.ip)}" /></td>
       <td><input class="modbus-slave-port" type="number" min="1" max="65535" inputmode="numeric" value="${escapeHtml(slave.port)}" /></td>
+      <td><input class="modbus-slave-unit-id" type="number" min="0" max="255" inputmode="numeric" value="${escapeHtml(String(slave.unitId ?? 1))}" /></td>
       <td>
         <select class="modbus-slave-type">
           <option value="holding" ${slave.type === "holding" ? "selected" : ""}>${escapeHtml(t("modbus.type.holding"))}</option>
@@ -558,6 +624,7 @@ function collectModbusDraftFromForm() {
       ip: row.querySelector(".modbus-slave-ip")?.value.trim() || "",
       port: row.querySelector(".modbus-slave-port")?.value.trim() || "",
       type: row.querySelector(".modbus-slave-type")?.value.trim() || "holding",
+      unitId: parseInt(row.querySelector(".modbus-slave-unit-id")?.value ?? "1", 10) || 1,
     }))
     .filter((item) => item.name || item.ip || item.port || item.type !== "holding");
 
@@ -2023,10 +2090,12 @@ async function loadModbusDraft() {
     const draft = sanitizeModbusDraft(data.settings || {});
     renderModbusDraft(draft);
     lastModbusDraftSnapshot = draft;
+    clearModbusConnectionResult();
   } catch (_error) {
     const draft = sanitizeModbusDraft({});
     renderModbusDraft(draft);
     lastModbusDraftSnapshot = draft;
+    clearModbusConnectionResult();
   }
 }
 
@@ -2058,19 +2127,10 @@ function getValidatedModbusSlave(row) {
     ip: row.querySelector(".modbus-slave-ip")?.value.trim() || "",
     port: row.querySelector(".modbus-slave-port")?.value.trim() || "",
     type: row.querySelector(".modbus-slave-type")?.value.trim() || "holding",
+    unitId: parseInt(row.querySelector(".modbus-slave-unit-id")?.value ?? "1", 10) || 1,
   };
   validateModbusDraft({ slaves: [slave], mappings: [] });
   return slave;
-}
-
-function formatAddrHexValues(hexValues) {
-  if (!Array.isArray(hexValues) || hexValues.length === 0) {
-    return "";
-  }
-  return hexValues
-    .slice(0, 9)
-    .map((value, index) => `ADDR${index}=${value}`)
-    .join(" ");
 }
 
 async function testModbusSlaveConnection(row) {
@@ -2078,6 +2138,7 @@ async function testModbusSlaveConnection(row) {
   try {
     slave = getValidatedModbusSlave(row);
   } catch (error) {
+    clearModbusConnectionResult();
     showMessageOn("modbus", error.message || t("msg.modbus_connect_failed", { ip: "", port: "" }), true);
     return;
   }
@@ -2086,11 +2147,21 @@ async function testModbusSlaveConnection(row) {
     const data = await requestJson("/api/modbus/test-connection", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ip: slave.ip, port: slave.port, unit_id: 1, timeout_ms: 1500 }),
+      body: JSON.stringify({ ip: slave.ip, port: slave.port, unit_id: slave.unitId ?? 1, timeout_ms: 1500 }),
     });
-    const values = formatAddrHexValues(data?.hex_values);
-    showMessageOn("modbus", t("msg.modbus_connect_success", { ip: slave.ip, port: slave.port, values }));
+    renderModbusConnectionResult({
+      ip: slave.ip,
+      port: slave.port,
+      unitId: data?.unit_id ?? 1,
+      hexValues: data?.hex_values,
+    });
+    showMessageOn("modbus", t("msg.modbus_connect_success", { ip: slave.ip, port: slave.port }));
   } catch (error) {
+    renderModbusConnectionResult({
+      ip: slave.ip,
+      port: slave.port,
+      errorMessage: error.message || t("msg.modbus_connect_failed", { ip: slave.ip, port: slave.port }),
+    });
     showMessageOn("modbus", error.message || t("msg.modbus_connect_failed", { ip: slave.ip, port: slave.port }), true);
     return;
   }

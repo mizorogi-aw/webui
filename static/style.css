@@ -708,6 +708,23 @@ body.ui-locked .container {
   padding: 18px;
 }
 
+.modbus-result-table {
+  min-width: 320px;
+}
+
+.modbus-result-summary {
+  color: #2f5d50;
+}
+
+.modbus-result-summary.is-error {
+  color: #b30000;
+}
+
+.modbus-result-empty {
+  text-align: center;
+  color: #5b6a62;
+}
+
 @keyframes reveal {
   from {
     opacity: 0;

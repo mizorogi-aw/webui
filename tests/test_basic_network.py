@@ -110,6 +110,14 @@ class BasicNetworkTests(unittest.TestCase):
         self.assertIn(b"modbus-add-slave-btn", response.data)
         self.assertIn(b"modbus-mapping-body", response.data)
 
+    def test_index_contains_modbus_connection_result_panel(self):
+        response = self.client.get("/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"modbus-connect-result-card", response.data)
+        self.assertIn(b"modbus-connect-result-summary", response.data)
+        self.assertIn(b"modbus-connect-result-body", response.data)
+
 
 if __name__ == "__main__":
     unittest.main()

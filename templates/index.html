@@ -274,6 +274,7 @@
                   <th data-i18n="modbus.col.name">Name</th>
                   <th data-i18n="modbus.col.ip">IP Address</th>
                   <th data-i18n="modbus.col.port">Port No.</th>
+                  <th data-i18n="modbus.col.unit_id">Unit ID</th>
                   <th data-i18n="modbus.col.type">Type</th>
                   <th data-i18n="modbus.col.actions">Actions</th>
                 </tr>
@@ -302,6 +303,22 @@
             </table>
           </div>
           <p id="modbus-mapping-status" class="custom-help"></p>
+        </div>
+
+        <div id="modbus-connect-result-card" class="upload-card" hidden>
+          <h3 data-i18n="modbus.result.heading">Connection Result</h3>
+          <p id="modbus-connect-result-summary" class="custom-help"></p>
+          <div class="modbus-grid-wrap">
+            <table class="modbus-table modbus-result-table">
+              <thead>
+                <tr>
+                  <th data-i18n="modbus.result.col.address">Address</th>
+                  <th data-i18n="modbus.result.col.value">Value</th>
+                </tr>
+              </thead>
+              <tbody id="modbus-connect-result-body"></tbody>
+            </table>
+          </div>
         </div>
 
         <p id="message-modbus" class="tab-message"></p>
