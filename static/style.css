@@ -655,6 +655,14 @@ body.ui-locked .container {
   font-weight: 600;
 }
 
+.tab-message.is-error {
+  color: #b30000;
+}
+
+.tab-message.is-ok {
+  color: #2f5d50;
+}
+
 .modbus-grid-wrap {
   overflow: auto;
   border: 1px solid var(--line);
@@ -1071,6 +1079,30 @@ tr.grid-row-error td {
 
 .grid-validation-status.is-ok {
   color: #2f5d50;
+}
+
+body.theme-dark tr.grid-row-error {
+  background: #3d1a1a !important;
+}
+
+body.theme-dark tr.grid-row-error td {
+  border-color: #7a2a2a;
+}
+
+body.theme-dark .grid-validation-status.is-error {
+  color: #ff8080;
+}
+
+body.theme-dark .grid-validation-status.is-ok {
+  color: #5cb85c;
+}
+
+body.theme-dark .tab-message.is-error {
+  color: #ff8080;
+}
+
+body.theme-dark .tab-message.is-ok {
+  color: #5cb85c;
 }
 
 .grid-toolbar {

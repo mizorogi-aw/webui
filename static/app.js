@@ -199,14 +199,18 @@ function showMessage(msg, isError = false) {
   const local = activeTab ? document.getElementById(`message-${activeTab}`) : null;
   const el = local || document.getElementById("message");
   el.textContent = msg;
-  el.style.color = isError ? "#b30000" : "#2f5d50";
+  el.classList.toggle("is-error", Boolean(msg) && isError);
+  el.classList.toggle("is-ok", Boolean(msg) && !isError);
+  delete el.dataset.gridValidation;
 }
 
 function showMessageOn(tabId, msg, isError = false) {
   const local = document.getElementById(`message-${tabId}`);
   if (local) {
     local.textContent = msg;
-    local.style.color = isError ? "#b30000" : "#2f5d50";
+    local.classList.toggle("is-error", Boolean(msg) && isError);
+    local.classList.toggle("is-ok", Boolean(msg) && !isError);
+    delete local.dataset.gridValidation;
     return;
   }
   showMessage(msg, isError);
@@ -431,7 +435,15 @@ function setModbusMappingCardVisible(visible) {
 }
 
 function normalizeModbusMappingKey(mapping) {
-  return `${mapping.nodeId || ""}::${mapping.browsePath || ""}`;
+  const browseName = String(mapping?.browseName || "").trim();
+  if (browseName) {
+    return `bn::${browseName}`;
+  }
+  const nodeId = String(mapping?.nodeId || "").trim();
+  if (nodeId) {
+    return `nid::${nodeId}`;
+  }
+  return `bp::${String(mapping?.browsePath || "").trim()}`;
 }
 
 function getModbusMappingSourceRows(savedMappings = []) {
@@ -565,7 +577,7 @@ function renderModbusMappingRows(draft) {
 
   const sourceRows = getModbusMappingSourceRows(draft.mappings || []);
   if (sourceRows.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="5" class="modbus-empty-cell">${escapeHtml(t("modbus.empty.mapping"))}</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="6" class="modbus-empty-cell">${escapeHtml(t("modbus.empty.mapping"))}</td></tr>`;
     updateModbusMappingStatus("", 0);
     return;
   }
@@ -588,7 +600,8 @@ function renderModbusMappingRows(draft) {
       .join("");
 
     row.innerHTML = `
-      <td>${escapeHtml(item.browsePath || item.browseName || item.nodeId || "")}</td>
+      <td>${escapeHtml(item.browsePath || "")}</td>
+      <td>${escapeHtml(item.browseName || item.nodeId || "")}</td>
       <td>${escapeHtml(item.dataType || "")}</td>
       <td><select class="modbus-mapping-slave">${optionsHtml}</select></td>
       <td><input class="modbus-mapping-address" type="text" value="${escapeHtml(item.address || "")}" /></td>
@@ -628,7 +641,7 @@ function collectModbusDraftFromForm() {
     }))
     .filter((item) => item.name || item.ip || item.port || item.type !== "holding");
 
-  const mappings = Array.from(document.querySelectorAll("#modbus-mapping-body tr[data-browse-path], #modbus-mapping-body tr[data-node-id]"))
+  const mappings = Array.from(document.querySelectorAll("#modbus-mapping-body tr[data-browse-name], #modbus-mapping-body tr[data-browse-path], #modbus-mapping-body tr[data-node-id]"))
     .map((row) => ({
       nodeId: row.dataset.nodeId || "",
       browsePath: row.dataset.browsePath || "",
@@ -1893,6 +1906,12 @@ async function validateFormatGridInline() {
 
   clearGridErrorHighlights();
   clearFormatGridValidationStatus();
+  const msgEl = document.getElementById("message-opcua");
+  if (msgEl && msgEl.dataset.gridValidation) {
+    msgEl.textContent = "";
+    msgEl.classList.remove("is-error", "is-ok");
+    delete msgEl.dataset.gridValidation;
+  }
 }
 
 function scheduleFormatGridValidation(delay = FORMAT_GRID_VALIDATE_DEBOUNCE_MS) {
@@ -1976,6 +1995,8 @@ async function saveFormatGrid() {
     const first = data.errors[0];
     const detail = first && first.message ? `: ${first.message}` : "";
     showMessageOn("opcua", `${t("opcua.grid.validation_failed")}${detail}`, true);
+    const msgEl = document.getElementById("message-opcua");
+    if (msgEl) msgEl.dataset.gridValidation = "1";
     return;
   }
 
