@@ -265,6 +265,18 @@
         </div>
 
         <div class="upload-card">
+          <form id="modbus-file-form" enctype="multipart/form-data">
+            <label data-i18n="modbus.file.label">Modbus設定CSVをアップロード</label>
+            <input id="modbus_file" name="file" type="file" accept=".csv" required />
+            <p id="modbus-file-status" class="custom-help" data-i18n="modbus.file.help">任意のCSVを選択できます。保存時は modbustcp.csv として固定名で配置されます。</p>
+            <div class="action-row">
+              <button id="modbus-file-upload-btn" type="button" class="action" data-i18n="actions.upload">Upload</button>
+              <button id="modbus-file-download-btn" type="button" class="action" disabled data-i18n="actions.download_current">Download Current</button>
+            </div>
+          </form>
+        </div>
+
+        <div class="upload-card">
           <h3 data-i18n="modbus.slaves.heading">Slave Settings</h3>
           <p class="custom-help" data-i18n="modbus.slaves.help">Define slave name, IP address, port, Unit ID, and register type. Up to 5 entries.</p>
           <div class="modbus-grid-wrap">

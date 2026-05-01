@@ -1,3 +1,4 @@
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -176,6 +177,31 @@ class FormatCsvToDtoTests(unittest.TestCase):
         self.assertEqual(row["Historizing"], "1")
         self.assertIn("Param1", row)
         self.assertEqual(row["Cyclic"], "120000")
+
+    def test_trims_whitespace_in_node_class_and_datatype(self):
+        csv_text = (
+            "Meta1,Meta2,Meta3,Meta4,NS0\n"
+            "NodeClass,BrowsePath,NodeId,ReferenceTypeId,BrowseName,TypeDefinitionId,"
+            "HasModellingRule,ReferenceTypeId,ReferenceNodeId,DisplayName,Description,"
+            "WriteMask,ObjectType:EventNotifier,VariableType:ObjectType:IsAbstract,"
+            "VariableType:Variable:DataType,VariableType:Variable:ValueRank,"
+            "VariableType:Variable:ArrayDimensionsSize,VariableType:Variable:Value,"
+            "Variable:accessLevel,Variable:minimumSamplingInterval,Variable:historizing,"
+            "Method:userExecutable,ReferenceType:symmetric,ReferenceType:inverseName,"
+            "Cyclic,Param1,Param2\n"
+            "Object,Objects,ns=0;i=10001,Type/ReferenceTypes/References/HierarchicalReferences/Organizes,"
+            "Device,Type/ObjectTypes/BaseObjectType/FolderType,Mandatory,,,en:Device,en:Device,0,1,,,,,,,,,,,,,,\n"
+            "Variable ,Objects/Device,ns=0;i=10002,Type/ReferenceTypes/References/HierarchicalReferences/Organizes,"
+            " Sensor1 ,Type/VariableTypes/BaseVariableType/BaseDataVariableType,Mandatory,,,en:Sensor1,en:Sensor1,"
+            "0,,,Type/DataTypes/BaseDataType/Number/Float ,-1,0,0.0,5,250,1,,,,1000,0,\n"
+        )
+
+        parsed = main.parse_format_csv(csv_text)
+        rows = main.format_csv_to_dto(parsed)
+
+        self.assertEqual(rows[1]["NodeClass"], "Variable")
+        self.assertEqual(rows[1]["BrowseName"], "Sensor1")
+        self.assertEqual(rows[1]["DataType"], "FLOAT")
 
 
 class DtoToFormatCsvRowTests(unittest.TestCase):
@@ -476,6 +502,60 @@ class FormatGridApiTests(unittest.TestCase):
             self.assertEqual(parsed["ns_labels"], ["NS0", "NS1", "NS2"])
             self.assertEqual(parsed["data"][1][main._FC_PARAM1], "1")
 
+    def test_add_object_variable_then_reload_reflects_in_format_grid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fmt_file = Path(tmp) / "format.csv"
+            fmt_file.write_text(SAMPLE_CSV, encoding="utf-8")
+            server_bin = Path(tmp) / "ua_server_sample"
+            server_bin.touch()
+
+            rows = [
+                {
+                    "NodeClass": "Object", "BrowsePath": "Objects", "BrowseName": "Device",
+                    "NamespaceIndex": "0", "NodeIdNumber": "10001", "DataType": "", "Access": "",
+                    "Historizing": "", "EventNotifier": "1", "Param1": "",
+                },
+                {
+                    "NodeClass": "Variable", "BrowsePath": "Objects/Device", "BrowseName": "Sensor1",
+                    "NamespaceIndex": "0", "NodeIdNumber": "10002", "DataType": "DOUBLE", "Access": "1",
+                    "Historizing": "1", "EventNotifier": "", "Cyclic": "1000", "Param1": "0",
+                },
+                {
+                    "NodeClass": "Object", "BrowsePath": "Objects/Device", "BrowseName": "Unit2",
+                    "NamespaceIndex": "0", "NodeIdNumber": "10010", "DataType": "", "Access": "",
+                    "Historizing": "", "EventNotifier": "0", "Param1": "",
+                },
+                {
+                    "NodeClass": "Variable", "BrowsePath": "Objects/Device/Unit2", "BrowseName": "power",
+                    "NamespaceIndex": "0", "NodeIdNumber": "10011", "DataType": "FLOAT", "Access": "1",
+                    "Historizing": "", "EventNotifier": "", "Cyclic": "1000", "Param1": "0",
+                },
+            ]
+
+            with (
+                patch.object(main, "OPCUA_FORMAT_FILE", fmt_file),
+                patch.object(main, "OPCUA_SERVER_BIN", server_bin),
+                patch.object(main, "ensure_opcua_mutable_paths", return_value=(True, "")),
+                patch.object(main, "require_root", return_value=(True, None)),
+            ):
+                save_res = self.client.put(
+                    "/api/opcua/format-grid",
+                    json={"rows": rows, "ns_labels": ["NS0"]},
+                )
+                self.assertEqual(save_res.status_code, 200)
+
+                get_res = self.client.get("/api/opcua/format-grid")
+                self.assertEqual(get_res.status_code, 200)
+                data = get_res.get_json()
+
+            self.assertTrue(any(
+                r.get("NodeClass") == "Variable"
+                and r.get("BrowsePath") == "Objects/Device/Unit2"
+                and r.get("BrowseName") == "power"
+                and r.get("NodeIdNumber") == "10011"
+                for r in data.get("rows", [])
+            ))
+
     def test_save_validation_error_returns_422(self):
         """Saving rows with validation errors returns HTTP 422 with error details."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -647,6 +727,56 @@ class ModbusSettingsTests(unittest.TestCase):
             self.assertIn("modbus.connection.value1.SlaveA,40001,ns=0;i=10002,DOUBLE", written)
             self.assertNotIn("99999", written)
 
+    def test_save_format_grid_prunes_modbus_mappings_for_deleted_nodes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fmt_file = Path(tmp) / "format.csv"
+            fmt_file.write_text(SAMPLE_CSV, encoding="utf-8")
+            server_bin = Path(tmp) / "ua_server_sample"
+            server_bin.touch()
+            modbus_file = Path(tmp) / "modbustcp.csv"
+            modbus_file.write_text(
+                "modbus.server.setting1.name,SlaveA\n"
+                "modbus.server.setting1.ip,192.168.0.10\n"
+                "modbus.server.setting1.port,502\n"
+                "modbus.server.setting1.type,holding\n"
+                "modbus.server.setting1.unitid,7\n"
+                "modbus.connection.value1.SlaveA,40001,ns=0;i=10002,DOUBLE\n"
+                "modbus.connection.value2.SlaveA,40002,ns=0;i=99999,DOUBLE\n",
+                encoding="utf-8",
+            )
+
+            # Delete action equivalent: save format-grid without the deleted Variable node (ns=0;i=10002)
+            rows_after_delete = [
+                {
+                    "NodeClass": "Object", "BrowsePath": "Objects", "BrowseName": "Device",
+                    "NamespaceIndex": "0", "NodeIdNumber": "10001", "DataType": "", "Access": "",
+                    "Historizing": "", "EventNotifier": "1", "Param1": "",
+                },
+            ]
+
+            with (
+                patch.object(main, "OPCUA_FORMAT_FILE", fmt_file),
+                patch.object(main, "OPCUA_SERVER_BIN", server_bin),
+                patch.object(main, "MODBUS_TCP_FILE", modbus_file),
+                patch.object(main, "ensure_opcua_mutable_paths", return_value=(True, "")),
+                patch.object(main, "require_root", return_value=(True, None)),
+                patch.object(main, "save_modbus_draft", return_value=None),
+            ):
+                response = self.client.put(
+                    "/api/opcua/format-grid",
+                    json={"rows": rows_after_delete, "ns_labels": ["NS0"]},
+                )
+
+            self.assertEqual(response.status_code, 200)
+            data = response.get_json()
+            self.assertEqual(data.get("modbus_mapping_count"), 0)
+            serialized = modbus_file.read_text(encoding="utf-8")
+            self.assertNotIn("ns=0;i=10002", serialized)
+            self.assertNotIn("ns=0;i=99999", serialized)
+
+            pruned = main.parse_modbus_settings_csv(serialized)
+            self.assertEqual(len(pruned["mappings"]), 0)
+
     def test_modbus_roundtrip_keeps_mapping_unchanged_when_unitid_added(self):
         with tempfile.TemporaryDirectory() as tmp:
             fmt_file = Path(tmp) / "format.csv"
@@ -684,6 +814,46 @@ class ModbusSettingsTests(unittest.TestCase):
         self.assertEqual(settings["slaves"][0]["name"], "SlaveA")
         self.assertEqual(settings["slaves"][0]["unitId"], 11)
         self.assertEqual(settings["mappings"][0]["address"], "40001")
+
+    def test_upload_modbus_file_saves_as_fixed_filename(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            modbus_file = Path(tmp) / "modbustcp.csv"
+            server_bin = Path(tmp) / "ua_server_sample"
+            server_bin.touch()
+            with (
+                patch.object(main, "MODBUS_TCP_FILE", modbus_file),
+                patch.object(main, "OPCUA_SERVER_BIN", server_bin),
+                patch.object(main, "ensure_opcua_mutable_paths", return_value=(True, "")),
+                patch.object(main, "require_root", return_value=(True, None)),
+            ):
+                response = self.client.post(
+                    "/api/modbus/file",
+                    data={"file": (io.BytesIO(b"k,v\na,b\n"), "custom-name.csv")},
+                    content_type="multipart/form-data",
+                )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["filename"], "modbustcp.csv")
+        self.assertTrue(modbus_file.is_file())
+        self.assertEqual(modbus_file.read_text(encoding="utf-8"), "k,v\na,b\n")
+
+    def test_download_modbus_file_returns_attachment(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            modbus_file = Path(tmp) / "modbustcp.csv"
+            modbus_file.write_text("a,b\n1,2\n", encoding="utf-8")
+            server_bin = Path(tmp) / "ua_server_sample"
+            server_bin.touch()
+            with (
+                patch.object(main, "MODBUS_TCP_FILE", modbus_file),
+                patch.object(main, "OPCUA_SERVER_BIN", server_bin),
+            ):
+                response = self.client.get("/api/modbus/file/download")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("attachment", response.headers.get("Content-Disposition", ""))
+        self.assertIn("modbustcp.csv", response.headers.get("Content-Disposition", ""))
+        self.assertEqual(response.data, b"a,b\n1,2\n")
 
     def test_modbus_connection_endpoint_success(self):
         with patch.object(main, "read_modbus_addr0_to_8_hex", return_value=["0x0001", "0x0002"]):

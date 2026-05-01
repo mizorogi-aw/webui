@@ -107,6 +107,9 @@ class BasicNetworkTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertIn(b"panel-modbus", response.data)
+        self.assertIn(b"modbus-file-form", response.data)
+        self.assertIn(b"modbus-file-upload-btn", response.data)
+        self.assertIn(b"modbus-file-download-btn", response.data)
         self.assertIn(b"modbus-add-slave-btn", response.data)
         self.assertIn(b"modbus-mapping-body", response.data)
 

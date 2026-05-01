@@ -53,6 +53,7 @@ OPCUA_CLIENT_CERT_DIR = OPCUA_INSTALL_ROOT / "client_certs"
 OPCUA_FORMAT_FILE = OPCUA_INSTALL_ROOT / "config" / "format.csv"
 OPCUA_CONFIG_FILE = OPCUA_INSTALL_ROOT / "config" / "config.csv"
 MODBUS_TCP_FILE = OPCUA_INSTALL_ROOT / "config" / "modbustcp.csv"
+MODBUS_TCP_FILENAME = "modbustcp.csv"
 OPCUA_SERVICE_NAME = "ua_server_sample.service"
 OPCUA_MAX_CLIENT_CERTS = 5
 OPCUA_MAX_USERS = 5
@@ -505,19 +506,20 @@ def format_csv_to_dto(parsed: dict) -> list[dict]:
     rows = []
     for i, row in enumerate(parsed["data"]):
         ns_idx, id_num = _split_node_id(row[_FC_NODE_ID])
+        data_type_raw = row[_FC_DATA_TYPE].strip()
         rows.append({
             "_row": i,
-            "NodeClass": row[_FC_NODE_CLASS],
-            "BrowsePath": row[_FC_BROWSE_PATH],
+            "NodeClass": row[_FC_NODE_CLASS].strip(),
+            "BrowsePath": row[_FC_BROWSE_PATH].strip(),
             "NamespaceIndex": ns_idx,
             "NodeIdNumber": id_num,
-            "BrowseName": row[_FC_BROWSE_NAME],
-            "DataType": _FC_DATATYPE_PATH_TO_SHORT.get(row[_FC_DATA_TYPE], row[_FC_DATA_TYPE]),
+            "BrowseName": row[_FC_BROWSE_NAME].strip(),
+            "DataType": _FC_DATATYPE_PATH_TO_SHORT.get(data_type_raw, data_type_raw),
             "Access": _normalize_access_level_for_ui(row[_FC_ACCESS_LEVEL]),
-            "Historizing": row[_FC_HISTORIZING],
-            "EventNotifier": row[_FC_OBJECT_EVENT_NOTIFIER],
+            "Historizing": row[_FC_HISTORIZING].strip(),
+            "EventNotifier": row[_FC_OBJECT_EVENT_NOTIFIER].strip(),
             "Cyclic": row[_FC_CYCLIC] if row[_FC_CYCLIC].strip() else "1000",
-            "Param1": row[_FC_PARAM1],
+            "Param1": row[_FC_PARAM1].strip(),
         })
     return rows
 
@@ -876,15 +878,15 @@ def _normalize_modbus_mapping(raw: dict) -> dict:
     }
 
 
-def _load_opcua_variable_lookup() -> dict[str, dict]:
+def _load_opcua_variable_lookup() -> dict[str, dict] | None:
     if not OPCUA_FORMAT_FILE.is_file():
-        return {}
+        return None
 
     try:
         parsed = parse_format_csv(OPCUA_FORMAT_FILE.read_text(encoding="utf-8"))
         rows = format_csv_to_dto(parsed)
     except (OSError, ValueError, IndexError):
-        return {}
+        return None
 
     lookup: dict[str, dict] = {}
     for row in rows:
@@ -922,8 +924,8 @@ def prune_modbus_settings(settings: dict) -> dict:
             continue
         if not mapping["address"]:
             continue
-        current_node = opcua_lookup.get(mapping["nodeId"])
-        if opcua_lookup and current_node is None:
+        current_node = opcua_lookup.get(mapping["nodeId"]) if opcua_lookup is not None else None
+        if opcua_lookup is not None and current_node is None:
             continue
         merged = dict(mapping)
         if current_node:
@@ -1061,7 +1063,7 @@ def parse_modbus_settings_csv(text: str) -> dict:
     reader = csv.reader(io.StringIO(text))
     slaves_by_index: dict[int, dict] = {}
     mappings: list[dict] = []
-    opcua_lookup = _load_opcua_variable_lookup()
+    opcua_lookup = _load_opcua_variable_lookup() or {}
 
     for raw_row in reader:
         row = [cell.strip() for cell in raw_row]
@@ -1115,7 +1117,7 @@ def parse_modbus_settings_csv(text: str) -> dict:
 
 def serialize_modbus_settings_csv(settings: dict) -> str:
     normalized = prune_modbus_settings(settings)
-    opcua_lookup = _load_opcua_variable_lookup()
+    opcua_lookup = _load_opcua_variable_lookup() or {}
     buffer = io.StringIO()
     writer = csv.writer(buffer, lineterminator="\n", quoting=csv.QUOTE_MINIMAL)
 
@@ -1136,6 +1138,23 @@ def serialize_modbus_settings_csv(settings: dict) -> str:
         ])
 
     return buffer.getvalue()
+
+
+def sync_modbus_settings_with_current_address_space() -> tuple[bool, str, int]:
+    """Prune stale modbus mappings using current format.csv and persist the result."""
+    if not MODBUS_TCP_FILE.is_file():
+        return True, "", 0
+
+    try:
+        settings = parse_modbus_settings_csv(MODBUS_TCP_FILE.read_text(encoding="utf-8"))
+        MODBUS_TCP_FILE.write_text(serialize_modbus_settings_csv(settings), encoding="utf-8")
+        save_modbus_draft(settings)
+    except PermissionError:
+        return False, f"permission denied for path: {str(MODBUS_TCP_FILE)}", 500
+    except (OSError, ValueError, IndexError, csv.Error) as error:
+        return False, f"failed to synchronize modbustcp.csv: {error}", 500
+
+    return True, "", len(settings.get("mappings", []))
 
 
 def read_opcua_config() -> dict:
@@ -2144,6 +2163,60 @@ def save_modbus_settings():
     return jsonify({"ok": True, "settings": settings, "file": str(MODBUS_TCP_FILE)})
 
 
+@app.post("/api/modbus/file")
+@auth_required
+def upload_modbus_settings_file():
+    allowed, response = require_root()
+    if not allowed:
+        return response
+
+    ok, message = ensure_opcua_mutable_paths()
+    if not ok:
+        return jsonify({"error": message}), get_opcua_error_status(message)
+
+    if "file" not in request.files:
+        return jsonify({"error": "file field is required"}), 400
+
+    file = request.files["file"]
+    if not file or not file.filename:
+        return jsonify({"error": "empty file"}), 400
+
+    if Path(file.filename).suffix.lower() != ".csv":
+        return jsonify({"error": "file extension must be .csv"}), 400
+
+    try:
+        MODBUS_TCP_FILE.parent.mkdir(parents=True, exist_ok=True)
+        file.save(MODBUS_TCP_FILE)
+    except PermissionError:
+        return jsonify({"error": f"permission denied for path: {str(MODBUS_TCP_FILE)}"}), 500
+
+    return jsonify(
+        {
+            "ok": True,
+            "filename": MODBUS_TCP_FILENAME,
+            "file": serialize_uploaded_file(MODBUS_TCP_FILE),
+        }
+    )
+
+
+@app.get("/api/modbus/file/download")
+@auth_required
+def download_modbus_settings_file():
+    ok, message = ensure_opcua_installed()
+    if not ok:
+        return jsonify({"error": message}), 404
+
+    if not MODBUS_TCP_FILE.is_file():
+        return jsonify({"error": f"{MODBUS_TCP_FILENAME} not found"}), 404
+
+    return send_file(
+        MODBUS_TCP_FILE,
+        mimetype="text/csv",
+        as_attachment=True,
+        download_name=MODBUS_TCP_FILENAME,
+    )
+
+
 @app.post("/api/modbus/test-connection")
 @auth_required
 def test_modbus_connection():
@@ -2843,7 +2916,21 @@ def save_opcua_format_grid():
     except PermissionError:
         return jsonify({"error": f"permission denied for path: {str(OPCUA_FORMAT_FILE)}"}), 500
 
-    return jsonify({"ok": True, "row_count": len(new_data)})
+    sync_ok, sync_error, mapping_count = sync_modbus_settings_with_current_address_space()
+    if not sync_ok:
+        return jsonify({
+            "ok": True,
+            "row_count": len(new_data),
+            "modbus_sync_ok": False,
+            "modbus_sync_error": sync_error,
+        })
+
+    return jsonify({
+        "ok": True,
+        "row_count": len(new_data),
+        "modbus_sync_ok": True,
+        "modbus_mapping_count": mapping_count,
+    })
 
 
 @app.post("/api/opcua/format-grid/assign-node-ids")

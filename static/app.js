@@ -1,7 +1,4 @@
-const DUMMY_PAGES = [
-  { id: "dummy-runtime", labelKey: "tabs.dummy_runtime" },
-  { id: "dummy-advanced", labelKey: "tabs.dummy_advanced" },
-];
+const DUMMY_PAGES = [];
 
 const TAB_DEFINITIONS = [
   { id: "auth-username", labelKey: "tabs.account" },
@@ -16,6 +13,8 @@ const DEFAULT_UPLOAD_MAX_BYTES = 1024 * 1024;
 const DEFAULT_UPLOAD_MAX_FILES = 5;
 const REQUIRED_UPLOAD_EXTENSION = ".der";
 const REQUIRED_ADDRESS_SPACE_EXTENSION = ".csv";
+const REQUIRED_MODBUS_FILE_EXTENSION = ".csv";
+const MODBUS_FIXED_FILENAME = "modbustcp.csv";
 const OPCUA_MIN_USERS = 1;
 const OPCUA_MAX_USERS = 5;
 const OPCUA_MAX_SESSIONS = 16;
@@ -37,6 +36,7 @@ let formatGridNamespaces = []; // array of {label: string} (max 5)
 let formatGridValidationTimer = null;
 let formatGridValidationRequestId = 0;
 let modbusOpcuaVariables = [];
+let modbusFileExists = false;
 const FORMAT_GRID_NS_MAX = 5;
 const FORMAT_GRID_VALIDATE_DEBOUNCE_MS = 250;
 const RECONNECT_LOCK_STORAGE_KEY = "fieldGatewayReconnectPending";
@@ -491,6 +491,20 @@ function clearModbusConnectionResult() {
   if (card) {
     card.hidden = true;
   }
+}
+
+function renderModbusFileStatus() {
+  const status = document.getElementById("modbus-file-status");
+  const downloadButton = document.getElementById("modbus-file-download-btn");
+  if (downloadButton) {
+    downloadButton.disabled = !modbusFileExists;
+  }
+  if (!status) {
+    return;
+  }
+  status.textContent = modbusFileExists
+    ? t("modbus.file.present", { name: MODBUS_FIXED_FILENAME })
+    : t("modbus.file.help");
 }
 
 function renderModbusConnectionResult({ ip = "", port = "", unitId = "", hexValues = [], errorMessage = "" } = {}) {
@@ -985,7 +999,7 @@ function hasUnsavedFormatGridChanges() {
   }
 }
 
-function requestTabChange(targetTabId) {
+async function requestTabChange(targetTabId) {
   const activeTabId = document.querySelector(".tab.active")?.dataset?.tab || "";
   if (!targetTabId || targetTabId === activeTabId) {
     return;
@@ -1026,6 +1040,17 @@ function requestTabChange(targetTabId) {
   }
 
   setTab(targetTabId);
+
+  try {
+    // Re-fetch latest server-side data when entering data-heavy tabs.
+    if (targetTabId === "opcua") {
+      await loadOpcua();
+    } else if (targetTabId === "modbus") {
+      await loadModbusDraft();
+    }
+  } catch (error) {
+    showMessageOn(targetTabId, error.message || t("msg.initialization_failed", { message: "" }), true);
+  }
 }
 
 async function loadBasic(interfaceName = "") {
@@ -1981,7 +2006,13 @@ async function loadFormatGrid() {
 async function saveFormatGrid() {
   const rows = collectGridRows();
   const ns_labels = formatGridNamespaces.map((n) => n.label);
-  clearGridErrorHighlights();
+  // Invalidate/cancel pending inline validation to avoid stale responses
+  // clearing highlights after this save attempt reports validation errors.
+  formatGridValidationRequestId += 1;
+  if (formatGridValidationTimer) {
+    window.clearTimeout(formatGridValidationTimer);
+    formatGridValidationTimer = null;
+  }
   let data;
   try {
     data = await requestJson("/api/opcua/format-grid", {
@@ -1998,13 +2029,17 @@ async function saveFormatGrid() {
     applyGridErrors(data.errors);
     const first = data.errors[0];
     const detail = first && first.message ? `: ${first.message}` : "";
-    showMessageOn("opcua", `${t("opcua.grid.validation_failed")}${detail}`, true);
+    const errorMessage = `${t("opcua.grid.validation_failed")}${detail}`;
+    showMessageOn("opcua", errorMessage, true);
+    setFormatGridValidationStatus(errorMessage, true);
     const msgEl = document.getElementById("message-opcua");
     if (msgEl) msgEl.dataset.gridValidation = "1";
     return;
   }
 
   lastFormatGridSnapshot = JSON.stringify({ rows, ns_labels });
+  clearGridErrorHighlights();
+  clearFormatGridValidationStatus();
   showMessageOn("opcua", t("opcua.grid.saved", { count: data.row_count }));
 }
 
@@ -2086,9 +2121,11 @@ async function loadCustomSettings() {
 async function loadModbusMappingSource(showStatus = false) {
   try {
     const data = await requestJson("/api/opcua/format-grid");
+    const isVariableNode = (row) => String(row?.NodeClass || "").trim().toLowerCase() === "variable";
+    const isAllowedDataType = (row) => String(row?.DataType || "").trim().toLowerCase() !== "string";
     modbusOpcuaVariables = Array.isArray(data.rows)
       ? data.rows
-          .filter((row) => row.NodeClass === "Variable" && row.DataType !== "String")
+          .filter((row) => isVariableNode(row) && isAllowedDataType(row))
           .map((row) => ({
             nodeId: row.NodeIdNumber ? `ns=${row.NamespaceIndex};i=${row.NodeIdNumber}` : "",
             browsePath: row.BrowsePath || "",
@@ -2114,15 +2151,113 @@ async function loadModbusDraft() {
   try {
     const data = await requestJson("/api/modbus");
     const draft = sanitizeModbusDraft(data.settings || {});
+    modbusFileExists = Boolean(data.file_exists);
+    renderModbusFileStatus();
     renderModbusDraft(draft);
     lastModbusDraftSnapshot = draft;
     clearModbusConnectionResult();
   } catch (_error) {
     const draft = sanitizeModbusDraft({});
+    modbusFileExists = false;
+    renderModbusFileStatus();
     renderModbusDraft(draft);
     lastModbusDraftSnapshot = draft;
     clearModbusConnectionResult();
   }
+}
+
+async function submitModbusFileForm(event) {
+  event.preventDefault();
+
+  const fileInput = document.getElementById("modbus_file");
+  if (!fileInput || !fileInput.files || fileInput.files.length === 0) {
+    showMessageOn("modbus", t("msg.select_csv"), true);
+    return;
+  }
+
+  const selectedFile = fileInput.files[0];
+  if (!selectedFile.name.toLowerCase().endsWith(REQUIRED_MODBUS_FILE_EXTENSION)) {
+    showMessageOn("modbus", t("msg.select_csv"), true);
+    return;
+  }
+
+  if (selectedFile.size > uploadMaxBytes) {
+    showMessageOn("modbus", t("msg.max_file_size", { size: uploadMaxBytes }), true);
+    return;
+  }
+
+  if (!window.confirm(t("msg.modbus_upload_confirm", { name: selectedFile.name, fixedName: MODBUS_FIXED_FILENAME }))) {
+    showMessageOn("modbus", t("msg.upload_canceled"));
+    return;
+  }
+
+  const formData = new FormData();
+  formData.append("file", selectedFile);
+
+  const res = await fetch("/api/modbus/file", { method: "POST", body: formData });
+  let data = {};
+  try {
+    data = await res.json();
+  } catch (_error) {
+    data = {};
+  }
+
+  if (res.status === 401) {
+    showMessageOn("modbus", t("msg.auth_failed_reload"), true);
+    return;
+  }
+  if (!res.ok) {
+    showMessageOn("modbus", data.error || t("msg.modbus_upload_failed"), true);
+    return;
+  }
+
+  fileInput.value = "";
+  await loadModbusDraft();
+  showMessageOn("modbus", t("msg.modbus_uploaded", { name: MODBUS_FIXED_FILENAME }));
+}
+
+async function downloadModbusFile() {
+  if (!modbusFileExists) {
+    return;
+  }
+
+  if (!window.confirm(t("msg.modbus_download_confirm", { name: MODBUS_FIXED_FILENAME }))) {
+    showMessageOn("modbus", t("msg.download_canceled"));
+    return;
+  }
+
+  const res = await fetch("/api/modbus/file/download");
+  if (res.status === 401) {
+    showMessageOn("modbus", t("msg.auth_failed_reload"), true);
+    return;
+  }
+
+  if (!res.ok) {
+    let data = {};
+    try {
+      data = await res.json();
+    } catch (_error) {
+      data = {};
+    }
+    showMessageOn("modbus", data.error || t("msg.download_failed"), true);
+    return;
+  }
+
+  const blob = await res.blob();
+  const downloadName = getDownloadFilenameFromHeader(
+    res.headers.get("Content-Disposition"),
+    MODBUS_FIXED_FILENAME,
+  );
+  const url = window.URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = downloadName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(url);
+
+  showMessageOn("modbus", t("msg.modbus_downloaded", { name: MODBUS_FIXED_FILENAME }));
 }
 
 async function addModbusSlave() {
@@ -2751,6 +2886,7 @@ function bindEvents() {
   bindClickOnlyAction(document.getElementById("opcua-config-form"), document.getElementById("opcua-config-save-btn"), submitOpcuaConfigForm);
   bindClickOnlyAction(document.getElementById("opcua-format-form"), document.getElementById("opcua-format-upload-btn"), submitOpcuaFormatForm);
   bindClickOnlyAction(document.getElementById("opcua-cert-form"), document.getElementById("opcua-cert-upload-btn"), submitOpcuaCertForm);
+  bindClickOnlyAction(document.getElementById("modbus-file-form"), document.getElementById("modbus-file-upload-btn"), submitModbusFileForm);
 
   document.getElementById("language-toggle-btn").addEventListener("click", toggleLanguage);
   document.getElementById("theme-toggle-btn").addEventListener("click", toggleTheme);
@@ -2781,6 +2917,7 @@ function bindEvents() {
   document.getElementById("modbus-add-slave-btn").addEventListener("click", addModbusSlave);
   document.getElementById("modbus-open-mapping-btn").addEventListener("click", openModbusMapping);
   document.getElementById("modbus-save-btn").addEventListener("click", saveModbusDraft);
+  document.getElementById("modbus-file-download-btn").addEventListener("click", downloadModbusFile);
   document.getElementById("modbus-slave-body").addEventListener("click", handleModbusSlaveTableClick);
   document.getElementById("modbus-slave-body").addEventListener("input", handleModbusSlaveTableInput);
   document.getElementById("modbus-mapping-body").addEventListener("click", handleModbusMappingTableClick);
