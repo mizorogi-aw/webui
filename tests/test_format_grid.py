@@ -548,6 +548,7 @@ class ModbusSettingsTests(unittest.TestCase):
                 "modbus.server.setting1.ip,192.168.0.10\n"
                 "modbus.server.setting1.port,502\n"
                 "modbus.server.setting1.type,holding\n"
+                "modbus.server.setting1.unitid,7\n"
                 "modbus.connection.value1.SlaveA,40001,ns=0;i=10002,DOUBLE\n"
             )
             with patch.object(main, "OPCUA_FORMAT_FILE", fmt_file):
@@ -555,8 +556,27 @@ class ModbusSettingsTests(unittest.TestCase):
 
         self.assertEqual(settings["slaves"][0]["name"], "SlaveA")
         self.assertEqual(settings["slaves"][0]["ip"], "192.168.0.10")
+        self.assertEqual(settings["slaves"][0]["unitId"], 7)
         self.assertEqual(settings["mappings"][0]["nodeId"], "ns=0;i=10002")
         self.assertEqual(settings["mappings"][0]["browsePath"], "Objects/Device")
+
+    def test_parse_modbus_settings_csv_keeps_backward_compat_without_unitid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fmt_file = Path(tmp) / "format.csv"
+            fmt_file.write_text(SAMPLE_CSV, encoding="utf-8")
+            csv_text = (
+                "modbus.server.setting1.name,SlaveA\n"
+                "modbus.server.setting1.ip,192.168.0.10\n"
+                "modbus.server.setting1.port,502\n"
+                "modbus.server.setting1.type,holding\n"
+                "modbus.connection.value1.SlaveA,40001,ns=0;i=10002,DOUBLE\n"
+            )
+            with patch.object(main, "OPCUA_FORMAT_FILE", fmt_file):
+                settings = main.parse_modbus_settings_csv(csv_text)
+
+        self.assertEqual(settings["slaves"][0]["unitId"], 1)
+        self.assertEqual(len(settings["mappings"]), 1)
+        self.assertEqual(settings["mappings"][0]["address"], "40001")
 
     def test_get_modbus_uses_saved_draft_when_csv_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -566,7 +586,7 @@ class ModbusSettingsTests(unittest.TestCase):
                 '  "upload_dir": "/tmp/uploads",\n'
                 '  "custom_pages": {\n'
                 '    "modbus-tcp": {\n'
-                '      "slaves": [{"name": "DraftA", "ip": "10.0.0.1", "port": "502", "type": "holding"}],\n'
+                '      "slaves": [{"name": "DraftA", "ip": "10.0.0.1", "port": "502", "type": "holding", "unitId": 3}],\n'
                 '      "mappings": []\n'
                 '    }\n'
                 '  },\n'
@@ -584,6 +604,7 @@ class ModbusSettingsTests(unittest.TestCase):
         data = response.get_json()
         self.assertEqual(data["source"], "draft")
         self.assertEqual(data["settings"]["slaves"][0]["name"], "DraftA")
+        self.assertEqual(data["settings"]["slaves"][0]["unitId"], 3)
 
     def test_save_modbus_writes_csv_and_prunes_deleted_nodes(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -599,7 +620,7 @@ class ModbusSettingsTests(unittest.TestCase):
             )
             payload = {
                 "slaves": [
-                    {"name": "SlaveA", "ip": "192.168.0.10", "port": "502", "type": "holding"},
+                    {"name": "SlaveA", "ip": "192.168.0.10", "port": "502", "type": "holding", "unitId": 9},
                 ],
                 "mappings": [
                     {"nodeId": "ns=0;i=10002", "browsePath": "Objects/Device", "browseName": "Sensor1", "dataType": "DOUBLE", "slaveName": "SlaveA", "address": "40001"},
@@ -622,8 +643,47 @@ class ModbusSettingsTests(unittest.TestCase):
             self.assertEqual(len(data["settings"]["mappings"]), 1)
             written = modbus_file.read_text(encoding="utf-8")
             self.assertIn("modbus.server.setting1.name,SlaveA", written)
+            self.assertIn("modbus.server.setting1.unitid,9", written)
             self.assertIn("modbus.connection.value1.SlaveA,40001,ns=0;i=10002,DOUBLE", written)
             self.assertNotIn("99999", written)
+
+    def test_modbus_roundtrip_keeps_mapping_unchanged_when_unitid_added(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fmt_file = Path(tmp) / "format.csv"
+            fmt_file.write_text(SAMPLE_CSV, encoding="utf-8")
+            csv_text = (
+                "modbus.server.setting1.name,SlaveA\n"
+                "modbus.server.setting1.ip,192.168.0.10\n"
+                "modbus.server.setting1.port,502\n"
+                "modbus.server.setting1.type,holding\n"
+                "modbus.server.setting1.unitid,5\n"
+                "modbus.connection.value1.SlaveA,40001,ns=0;i=10002,DOUBLE\n"
+            )
+            with patch.object(main, "OPCUA_FORMAT_FILE", fmt_file):
+                parsed1 = main.parse_modbus_settings_csv(csv_text)
+                serialized = main.serialize_modbus_settings_csv(parsed1)
+                parsed2 = main.parse_modbus_settings_csv(serialized)
+
+        self.assertEqual(parsed2["slaves"][0]["unitId"], 5)
+        self.assertEqual(len(parsed1["mappings"]), len(parsed2["mappings"]))
+        self.assertEqual(parsed1["mappings"][0]["nodeId"], parsed2["mappings"][0]["nodeId"])
+        self.assertEqual(parsed1["mappings"][0]["address"], parsed2["mappings"][0]["address"])
+        self.assertEqual(parsed1["mappings"][0]["dataType"], parsed2["mappings"][0]["dataType"])
+
+    def test_parse_modbus_settings_csv_compact_row_with_unitid(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fmt_file = Path(tmp) / "format.csv"
+            fmt_file.write_text(SAMPLE_CSV, encoding="utf-8")
+            csv_text = (
+                "modbus.server.setting1.SlaveA,192.168.0.10,502,holding,11\n"
+                "modbus.connection.value1.SlaveA,40001,ns=0;i=10002,DOUBLE\n"
+            )
+            with patch.object(main, "OPCUA_FORMAT_FILE", fmt_file):
+                settings = main.parse_modbus_settings_csv(csv_text)
+
+        self.assertEqual(settings["slaves"][0]["name"], "SlaveA")
+        self.assertEqual(settings["slaves"][0]["unitId"], 11)
+        self.assertEqual(settings["mappings"][0]["address"], "40001")
 
     def test_modbus_connection_endpoint_success(self):
         with patch.object(main, "read_modbus_addr0_to_8_hex", return_value=["0x0001", "0x0002"]):

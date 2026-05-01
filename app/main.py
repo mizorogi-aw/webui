@@ -482,9 +482,17 @@ def _compose_access_level_for_csv(ui_access: str, historizing: str) -> str:
         return ""
     if base not in (1, 2, 3):
         return ""
-    if str(historizing or "").strip() == "1":
+    if _normalize_historizing_for_csv(historizing) == "1":
         base |= 0x04
     return str(base)
+
+
+def _normalize_historizing_for_csv(raw_value: str) -> str:
+    """Normalize Historizing payloads to CSV token expected by server parser."""
+    token = str(raw_value or "").strip().lower()
+    if token in ("1", "true", "on", "yes"):
+        return "1"
+    return ""
 
 
 def _format_locale_text(value: str) -> str:
@@ -524,7 +532,7 @@ def _build_new_csv_row(dto: dict) -> list[str]:
     node_id = f"ns={ns_idx};i={id_num}" if id_num else ""
     data_type_short = str(dto.get("DataType", "")).strip()
     data_type = _FC_DATATYPE_SHORT_TO_PATH.get(data_type_short, data_type_short)
-    historizing = str(dto.get("Historizing", "")).strip()
+    historizing = _normalize_historizing_for_csv(dto.get("Historizing", ""))
     access = _compose_access_level_for_csv(str(dto.get("Access", "")).strip(), historizing)
     event_notifier = str(dto.get("EventNotifier", "0")).strip()
     param1 = str(dto.get("Param1", "")).strip()
@@ -576,7 +584,7 @@ def dto_to_format_csv_row(dto: dict, existing_row: list[str] | None) -> list[str
     row[_FC_DESCRIPTION] = _format_locale_text(row[_FC_BROWSE_NAME])
     data_type_short = str(dto.get("DataType", "")).strip()
     row[_FC_DATA_TYPE] = _FC_DATATYPE_SHORT_TO_PATH.get(data_type_short, data_type_short)
-    row[_FC_HISTORIZING] = str(dto.get("Historizing", row[_FC_HISTORIZING])).strip()
+    row[_FC_HISTORIZING] = _normalize_historizing_for_csv(dto.get("Historizing", row[_FC_HISTORIZING]))
     row[_FC_ACCESS_LEVEL] = _compose_access_level_for_csv(
         str(dto.get("Access", _normalize_access_level_for_ui(row[_FC_ACCESS_LEVEL]))).strip(),
         row[_FC_HISTORIZING],
@@ -668,6 +676,65 @@ def validate_format_grid(rows: list[dict]) -> list[dict]:
             errors.append({"row": row_idx, "field": "EventNotifier", "message": "Only one Object row can have EventNotifier=1"})
 
     return errors
+
+
+def _get_config_value_from_csv(config_path: Path, key: str) -> str | None:
+    try:
+        text = config_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+    for raw_line in text.splitlines():
+        parsed = parse_config_csv_entry(raw_line)
+        if not parsed:
+            continue
+        current_key, current_value = parsed
+        if current_key == key:
+            return current_value
+    return None
+
+
+def _get_history_node_store_size() -> int:
+    value = _get_config_value_from_csv(OPCUA_CONFIG_FILE, "server.initialNodeIdStoreSize")
+    if value is None:
+        return 10
+    try:
+        parsed = int(str(value).strip())
+    except ValueError:
+        return 10
+    return parsed if parsed > 0 else 10
+
+
+def _count_historizing_historyread_rows(rows: list[dict]) -> int:
+    count = 0
+    for row in rows:
+        if str(row.get("NodeClass", "")).strip() != "Variable":
+            continue
+        if _normalize_historizing_for_csv(row.get("Historizing", "")) != "1":
+            continue
+        try:
+            access = int(str(row.get("Access", "")).strip())
+        except ValueError:
+            continue
+        if access in (1, 2, 3):
+            count += 1
+    return count
+
+
+def _validate_history_store_capacity(rows: list[dict]) -> list[dict]:
+    required = _count_historizing_historyread_rows(rows)
+    capacity = _get_history_node_store_size()
+    if required <= capacity:
+        return []
+
+    return [{
+        "row": 0,
+        "field": "Historizing",
+        "message": (
+            "Historizing nodes requiring HistoryRead exceed server.initialNodeIdStoreSize "
+            f"({required} > {capacity}). Increase config.csv capacity before saving."
+        ),
+    }]
 
 
 def assign_format_grid_node_ids(rows: list[dict]) -> list[dict]:
@@ -783,11 +850,18 @@ def save_modbus_draft(settings: dict) -> None:
 
 
 def _normalize_modbus_slave(raw: dict) -> dict:
+    try:
+        unit_id = int(str(raw.get("unitId", raw.get("unit_id", 1))).strip())
+    except (TypeError, ValueError):
+        unit_id = 1
+    unit_id = max(0, min(255, unit_id))
+
     return {
         "name": str(raw.get("name", "")).strip(),
         "ip": str(raw.get("ip", "")).strip(),
         "port": str(raw.get("port", "502")).strip(),
         "type": str(raw.get("type", "holding")).strip() or "holding",
+        "unitId": unit_id,
     }
 
 
@@ -898,6 +972,8 @@ def validate_modbus_settings(payload: dict) -> dict:
             raise ValueError("port must be between 1 and 65535")
         if slave["type"] not in MODBUS_ALLOWED_TYPES:
             raise ValueError(f"unsupported slave type: {slave['type']}")
+        if not isinstance(slave.get("unitId"), int) or slave["unitId"] < 0 or slave["unitId"] > 255:
+            raise ValueError("unitId must be between 0 and 255")
 
     for mapping in mappings:
         if not mapping["slaveName"] or not mapping["address"]:
@@ -992,7 +1068,7 @@ def parse_modbus_settings_csv(text: str) -> dict:
         if not row or not any(row):
             continue
         key = row[0]
-        property_match = re.fullmatch(r"modbus\.server\.setting(\d+)\.(name|ip|port|type)", key)
+        property_match = re.fullmatch(r"modbus\.server\.setting(\d+)\.(name|ip|port|type|unitid|unitId)", key)
         compact_match = re.fullmatch(r"modbus\.server\.setting(\d+)\.(.+)", key)
         mapping_match = re.fullmatch(r"modbus\.connection\.value(\d+)\.(.+)", key)
 
@@ -1000,7 +1076,11 @@ def parse_modbus_settings_csv(text: str) -> dict:
             index = int(property_match.group(1))
             prop = property_match.group(2)
             slave = slaves_by_index.setdefault(index, _normalize_modbus_slave({}))
-            slave[prop] = row[1] if len(row) > 1 else ""
+            value = row[1] if len(row) > 1 else ""
+            if prop in {"unitid", "unitId"}:
+                slave["unitId"] = _normalize_modbus_slave({"unitId": value})["unitId"]
+            else:
+                slave[prop] = value
             continue
 
         if compact_match and len(row) >= 4:
@@ -1010,6 +1090,8 @@ def parse_modbus_settings_csv(text: str) -> dict:
             slave["ip"] = row[1]
             slave["port"] = row[2]
             slave["type"] = row[3]
+            if len(row) >= 5:
+                slave["unitId"] = _normalize_modbus_slave({"unitId": row[4]})["unitId"]
             continue
 
         if mapping_match:
@@ -1042,6 +1124,7 @@ def serialize_modbus_settings_csv(settings: dict) -> str:
         writer.writerow([f"modbus.server.setting{index}.ip", slave["ip"]])
         writer.writerow([f"modbus.server.setting{index}.port", slave["port"]])
         writer.writerow([f"modbus.server.setting{index}.type", slave["type"]])
+        writer.writerow([f"modbus.server.setting{index}.unitid", slave["unitId"]])
 
     for index, mapping in enumerate(normalized["mappings"], start=1):
         data_type = mapping["dataType"] or opcua_lookup.get(mapping["nodeId"], {}).get("dataType", "")
@@ -2705,6 +2788,7 @@ def validate_opcua_format_grid():
         return jsonify({"error": str(error)}), 400
 
     errors = validate_format_grid(rows)
+    errors.extend(_validate_history_store_capacity(rows))
     return jsonify({"ok": len(errors) == 0, "errors": errors})
 
 
@@ -2731,6 +2815,7 @@ def save_opcua_format_grid():
         return jsonify({"error": str(error)}), 400
 
     errors = validate_format_grid(rows)
+    errors.extend(_validate_history_store_capacity(rows))
     if errors:
         return jsonify({"error": "validation failed", "errors": errors}), 422
 

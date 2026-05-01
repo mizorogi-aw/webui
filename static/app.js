@@ -435,13 +435,13 @@ function setModbusMappingCardVisible(visible) {
 }
 
 function normalizeModbusMappingKey(mapping) {
-  const browseName = String(mapping?.browseName || "").trim();
-  if (browseName) {
-    return `bn::${browseName}`;
-  }
   const nodeId = String(mapping?.nodeId || "").trim();
   if (nodeId) {
     return `nid::${nodeId}`;
+  }
+  const browseName = String(mapping?.browseName || "").trim();
+  if (browseName) {
+    return `bn::${browseName}`;
   }
   return `bp::${String(mapping?.browsePath || "").trim()}`;
 }
@@ -618,7 +618,7 @@ function renderModbusDraft(draft, options = {}) {
   const preserveVisibility = Boolean(options.preserveMappingVisibility);
   const showMapping = preserveVisibility
     ? isModbusMappingCardVisible()
-    : sanitized.mappings.length > 0 || isModbusMappingCardVisible();
+    : sanitized.mappings.length > 0 || modbusOpcuaVariables.length > 0 || isModbusMappingCardVisible();
 
   renderModbusSlaveRows(sanitized.slaves);
   renderModbusMappingRows(sanitized);
@@ -678,6 +678,10 @@ function validateModbusDraft(draft) {
     const port = Number(slave.port);
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
       throw new Error(t("msg.modbus_port_invalid"));
+    }
+    const unitId = Number(slave.unitId);
+    if (!Number.isInteger(unitId) || unitId < 0 || unitId > 255) {
+      throw new Error(t("msg.modbus_unit_id_invalid"));
     }
     names.add(normalizedName);
   }
@@ -2084,7 +2088,7 @@ async function loadModbusMappingSource(showStatus = false) {
     const data = await requestJson("/api/opcua/format-grid");
     modbusOpcuaVariables = Array.isArray(data.rows)
       ? data.rows
-          .filter((row) => row.NodeClass === "Variable")
+          .filter((row) => row.NodeClass === "Variable" && row.DataType !== "String")
           .map((row) => ({
             nodeId: row.NodeIdNumber ? `ns=${row.NamespaceIndex};i=${row.NodeIdNumber}` : "",
             browsePath: row.BrowsePath || "",
@@ -2106,6 +2110,7 @@ async function loadModbusMappingSource(showStatus = false) {
 }
 
 async function loadModbusDraft() {
+  await loadModbusMappingSource();
   try {
     const data = await requestJson("/api/modbus");
     const draft = sanitizeModbusDraft(data.settings || {});

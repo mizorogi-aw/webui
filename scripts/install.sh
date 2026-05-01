@@ -14,6 +14,66 @@ NGINX_CONF_NAME="field-iot-gateway-webui.conf"
 LEGACY_NGINX_CONF_NAME="${LEGACY_COMPAT_PREFIX}.conf"
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# 設定ファイルの上書きポリシー
+# 既定では運用環境の編集内容を保持する
+CONFIG_MODE="${CONFIG_MODE:-preserve}"
+
+usage() {
+  cat <<EOF
+Usage: sudo ./scripts/install.sh [--preserve-config|--overwrite-config|--config-mode preserve|overwrite]
+
+  --preserve-config      設定を保持する（既定）
+  --overwrite-config     設定を上書きする（上書き前に bak を作成）
+  --config-mode MODE     MODE は preserve または overwrite
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --preserve-config)
+      CONFIG_MODE="preserve"
+      shift
+      ;;
+    --overwrite-config)
+      CONFIG_MODE="overwrite"
+      shift
+      ;;
+    --config-mode)
+      shift
+      [[ $# -gt 0 ]] || {
+        echo "--config-mode の値が指定されていません" >&2
+        exit 1
+      }
+      CONFIG_MODE="$1"
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Unknown option: $1" >&2
+      usage
+      exit 1
+      ;;
+  esac
+done
+
+if [[ "$CONFIG_MODE" != "preserve" && "$CONFIG_MODE" != "overwrite" ]]; then
+  echo "CONFIG_MODE は preserve または overwrite を指定してください" >&2
+  exit 1
+fi
+
+backup_if_exists() {
+  local path="$1"
+  if [[ -f "$path" ]]; then
+    local ts
+    ts="$(date +%Y%m%d_%H%M%S)"
+    cp -a "$path" "${path}.bak_${ts}"
+    echo "[INFO] backup created: $(basename "$path").bak_${ts}"
+  fi
+}
+
 if [[ "$EUID" -ne 0 ]]; then
   echo "Run as root: sudo ./scripts/install.sh"
   exit 1
@@ -40,7 +100,10 @@ if [[ -d "$LEGACY_DATA_DIR" && ! -d "$DATA_DIR" ]]; then
 fi
 
 mkdir -p "$CONFIG_DIR"
-if [[ ! -f "$CONFIG_DIR/config.json" ]]; then
+if [[ "$CONFIG_MODE" == "overwrite" ]]; then
+  backup_if_exists "$CONFIG_DIR/config.json"
+fi
+if [[ "$CONFIG_MODE" == "overwrite" || ! -f "$CONFIG_DIR/config.json" ]]; then
   cat <<'EOF' >"$CONFIG_DIR/config.json"
 {
   "upload_dir": "/var/lib/field-iot-gateway-webui/uploads",
@@ -52,6 +115,13 @@ if [[ ! -f "$CONFIG_DIR/config.json" ]]; then
   }
 }
 EOF
+  if [[ "$CONFIG_MODE" == "overwrite" ]]; then
+    echo "[INFO] config.json overwritten (CONFIG_MODE=overwrite)"
+  else
+    echo "[INFO] config.json created"
+  fi
+else
+  echo "[INFO] keep existing config.json (CONFIG_MODE=preserve)"
 fi
 
 mkdir -p "$DATA_DIR/uploads"
@@ -62,6 +132,11 @@ if [[ -f "$LEGACY_CONFIG_DIR/tls/server.crt" && ! -f "$CONFIG_DIR/tls/server.crt
 fi
 if [[ -f "$LEGACY_CONFIG_DIR/tls/server.key" && ! -f "$CONFIG_DIR/tls/server.key" ]]; then
   install -m 600 "$LEGACY_CONFIG_DIR/tls/server.key" "$CONFIG_DIR/tls/server.key"
+fi
+if [[ "$CONFIG_MODE" == "overwrite" ]]; then
+  backup_if_exists "$CONFIG_DIR/tls/server.crt"
+  backup_if_exists "$CONFIG_DIR/tls/server.key"
+  rm -f "$CONFIG_DIR/tls/server.crt" "$CONFIG_DIR/tls/server.key"
 fi
 if [[ ! -f "$CONFIG_DIR/tls/server.crt" || ! -f "$CONFIG_DIR/tls/server.key" ]]; then
   PRIMARY_IP="$(hostname -I | awk '{print $1}')"
@@ -74,6 +149,13 @@ if [[ ! -f "$CONFIG_DIR/tls/server.crt" || ! -f "$CONFIG_DIR/tls/server.key" ]];
     -out "$CONFIG_DIR/tls/server.crt" \
     -subj "/CN=$(hostname)" \
     -addext "subjectAltName=IP:127.0.0.1,IP:${PRIMARY_IP},DNS:$(hostname)"
+  if [[ "$CONFIG_MODE" == "overwrite" ]]; then
+    echo "[INFO] TLS cert/key regenerated (CONFIG_MODE=overwrite)"
+  else
+    echo "[INFO] TLS cert/key generated"
+  fi
+else
+  echo "[INFO] keep existing TLS cert/key (CONFIG_MODE=preserve)"
 fi
 
 rm -f "/etc/nginx/sites-enabled/$LEGACY_NGINX_CONF_NAME" "/etc/nginx/sites-available/$LEGACY_NGINX_CONF_NAME"
